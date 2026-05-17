@@ -24,3 +24,16 @@ def test_pk_sampler_skips_labels_with_too_few_samples():
     for batch in iter(sampler):
         ids = [labels[i] for i in batch]
         assert 0 not in ids
+
+
+def test_train_transform_has_no_random_erasing():
+    from torchvision import transforms
+    from training_pipeline.src.dataset import train_transform
+
+    tf = train_transform()
+    assert isinstance(tf, transforms.Compose)
+    names = [type(t).__name__ for t in tf.transforms]
+    assert "RandomErasing" not in names, (
+        f"RandomErasing is in train_transform: {names}. "
+        f"It erases identity regions on 160x160 face crops — drop it."
+    )

@@ -24,7 +24,6 @@ def train_transform():
         transforms.ColorJitter(0.2, 0.2, 0.2),
         transforms.ToTensor(),
         transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
-        transforms.RandomErasing(p=0.2),
     ])
 
 
