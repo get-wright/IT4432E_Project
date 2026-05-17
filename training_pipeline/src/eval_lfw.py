@@ -21,6 +21,9 @@ def load_pairs_txt(pairs_txt: Path) -> list[tuple[Path, Path, int]]:
         then for each fold:
             n_per_fold lines of "name idx1 idx2"  (positive pairs)
             n_per_fold lines of "name1 idx1 name2 idx2"  (negative pairs)
+
+    Pairs referencing images that don't exist on disk (MTCNN alignment failed)
+    are dropped silently.
     """
     lines = pairs_txt.read_text().splitlines()
     header = lines[0].split()
@@ -34,13 +37,15 @@ def load_pairs_txt(pairs_txt: Path) -> list[tuple[Path, Path, int]]:
             name, a, b = parts[0], int(parts[1]), int(parts[2])
             p1 = img_root / name / f"{name}_{a:04d}.jpg"
             p2 = img_root / name / f"{name}_{b:04d}.jpg"
-            pairs.append((p1, p2, 1))
+            if p1.exists() and p2.exists():
+                pairs.append((p1, p2, 1))
         for _ in range(n_per_fold):
             parts = lines[i].split(); i += 1
             n1, a, n2, b = parts[0], int(parts[1]), parts[2], int(parts[3])
             p1 = img_root / n1 / f"{n1}_{a:04d}.jpg"
             p2 = img_root / n2 / f"{n2}_{b:04d}.jpg"
-            pairs.append((p1, p2, 0))
+            if p1.exists() and p2.exists():
+                pairs.append((p1, p2, 0))
     return pairs
 
 
