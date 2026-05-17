@@ -12,6 +12,14 @@
 
 ---
 
+## Prerequisites
+
+- **VM credentials:** Tasks 14–16 SSH/SCP to `root@124.197.18.72`. Export the VM root password into the local shell before running those tasks: `export VM_PASSWORD='...'`. Never commit the value to this repo. (The Vietnamese provider has no key-based auth and no auto-stop API — see memory `training-provider`.)
+- **Local Python env:** `uv venv --python 3.11 .venv && source .venv/bin/activate && uv pip install -e ".[dev]"` already done if you can run the existing tests.
+- **VM env:** the `feat/face-recognition-siamese` worktree is already at `/root/IT4432E_Project/` on the VM with `.venv` populated. Re-run `infra/setup_vm.sh` only if those are missing.
+
+---
+
 ## File map
 
 **Modify:**
@@ -216,23 +224,23 @@ sys.path.insert(0, str(Path(__file__).parent))
 from lfw_layout import find_lfw_identity_root
 ```
 
-Then in `build_pairs_lfw` (or wherever LFW root is discovered):
+**Preserve the existing signature.** `process_split` (process-data/process.py) consumes `list[tuple[Path, str]]` of `(src_image, identity_label)` — keep that. Only swap the nesting-discovery logic:
 
 ```python
-def build_pairs_lfw() -> list[tuple[Path, Path]]:
+def build_pairs_lfw() -> list[tuple[Path, str]]:
     raw_dir = ROOT / "preprocess-data" / "lfw"
     identity_root = find_lfw_identity_root(raw_dir)
-    pairs: list[tuple[Path, Path]] = []
+    pairs: list[tuple[Path, str]] = []
     for person_dir in sorted(identity_root.iterdir()):
         if not person_dir.is_dir():
             continue
+        identity = f"lfw_{person_dir.name}"
         for src in sorted(person_dir.glob("*.jpg")):
-            out = ROOT / "process-data" / "lfw_pairs" / person_dir.name / src.name
-            pairs.append((src, out))
+            pairs.append((src, identity))
     return pairs
 ```
 
-(Adapt to match the existing function signature — the key is replacing the inline nesting walk with `find_lfw_identity_root`.)
+Open `process-data/process.py` and confirm the existing signature before saving. The key change is the discovery line, not the return type.
 
 - [ ] **Step 3: Smoke-test the alignment pipeline can still discover LFW**
 
@@ -741,16 +749,18 @@ def test_load_image_with_fallback_prefers_aligned(tmp_path):
     raw = tmp_path / "raw" / "Alice_0001.jpg"
     _make_jpg(aligned, size=(160, 160))
     _make_jpg(raw, size=(250, 250))
-    tensor = _load_image_with_fallback(aligned, raw)
+    tensor, used_fallback = _load_image_with_fallback(aligned, raw)
     assert tensor.shape == (3, 160, 160)
+    assert used_fallback is False
 
 
 def test_load_image_with_fallback_uses_raw_when_aligned_missing(tmp_path):
     aligned = tmp_path / "aligned" / "Alice_0001.jpg"  # never created
     raw = tmp_path / "raw" / "Alice_0001.jpg"
     _make_jpg(raw, size=(250, 250))
-    tensor = _load_image_with_fallback(aligned, raw)
+    tensor, used_fallback = _load_image_with_fallback(aligned, raw)
     assert tensor.shape == (3, 160, 160)
+    assert used_fallback is True
 
 
 def test_load_image_with_fallback_raises_when_both_missing(tmp_path):
@@ -831,13 +841,14 @@ _raw_fallback_tf = transforms.Compose([
 ])
 
 
-def _load_image_with_fallback(aligned: Path, raw: Path) -> torch.Tensor:
+def _load_image_with_fallback(aligned: Path, raw: Path) -> tuple[torch.Tensor, bool]:
     """Load aligned if it exists, otherwise center-crop raw to 80% of min(w,h) and resize.
 
+    Returns (tensor, used_fallback). `used_fallback=True` means the raw path was used.
     Missing raw is a setup bug (not a runtime path); raises AssertionError.
     """
     if aligned.exists():
-        return eval_transform()(Image.open(aligned).convert("RGB"))
+        return eval_transform()(Image.open(aligned).convert("RGB")), False
     assert raw.exists(), f"raw fallback also missing: {raw}"
     img = Image.open(raw).convert("RGB")
     w, h = img.size
@@ -845,7 +856,7 @@ def _load_image_with_fallback(aligned: Path, raw: Path) -> torch.Tensor:
     l = (w - side) // 2
     t = (h - side) // 2
     img = img.crop((l, t, l + side, t + side)).resize((160, 160), Image.BILINEAR)
-    return _raw_fallback_tf(img)
+    return _raw_fallback_tf(img), True
 
 
 def _pair_paths(pair: LfwPair, aligned_root: Path, raw_root: Path) -> tuple[tuple[Path, Path], tuple[Path, Path]]:
@@ -857,15 +868,20 @@ def _pair_paths(pair: LfwPair, aligned_root: Path, raw_root: Path) -> tuple[tupl
 
 
 class _PairImgDataset(Dataset):
-    def __init__(self, unique: list[tuple[Path, Path]]):
+    """Loads each unique image; tracks aligned vs raw-fallback counts via a shared list."""
+
+    def __init__(self, unique: list[tuple[Path, Path]], fallback_log: list[bool]):
         self.unique = unique
+        self.fallback_log = fallback_log  # mutated in __getitem__
 
     def __len__(self) -> int:
         return len(self.unique)
 
     def __getitem__(self, i: int):
         aligned, raw = self.unique[i]
-        return _load_image_with_fallback(aligned, raw)
+        tensor, used_fallback = _load_image_with_fallback(aligned, raw)
+        self.fallback_log.append(used_fallback)
+        return tensor
 
 
 def _assert_distribution_sane(metrics: dict) -> None:
@@ -903,6 +919,7 @@ def evaluate_lfw(
 
     The model must implement `embed_normalized(x)` returning unit-norm vectors.
     """
+    n_pairs_total = len(pairs)
     if max_pairs is not None:
         pairs = pairs[:max_pairs]
 
@@ -922,8 +939,10 @@ def evaluate_lfw(
             by_key[_key(pair.name2, pair.idx2)] = len(unique)
             unique.append((a2, r2))
 
-    ds = _PairImgDataset(unique)
-    dl = DataLoader(ds, batch_size=batch_size, num_workers=4, pin_memory=True)
+    fallback_log: list[bool] = []
+    ds = _PairImgDataset(unique, fallback_log)
+    # num_workers=0 so the shared fallback_log isn't duplicated per worker (transparency cost: slower).
+    dl = DataLoader(ds, batch_size=batch_size, num_workers=0, pin_memory=True)
 
     model.eval()
     embs_list: list[torch.Tensor] = []
@@ -958,11 +977,17 @@ def evaluate_lfw(
 
     pos = sims[labels == 1]
     neg = sims[labels == 0]
+    n_raw_fallback = sum(fallback_log)
     metrics = {
         "mean_acc": float(np.mean(accs)),
         "std_acc": float(np.std(accs)),
         "threshold_global": float(np.median(chosen_thresholds)),
         "n_pairs": n,
+        "n_pairs_total": int(n_pairs_total),
+        "n_pairs_used": int(n),
+        "n_unique_images": int(len(unique)),
+        "n_aligned": int(len(unique) - n_raw_fallback),
+        "n_raw_fallback": int(n_raw_fallback),
         "pos_sim_mean": float(pos.mean()) if len(pos) else 0.0,
         "pos_sim_std": float(pos.std()) if len(pos) else 0.0,
         "neg_sim_mean": float(neg.mean()) if len(neg) else 0.0,
@@ -1397,9 +1422,15 @@ def _cosine_lr(step: int, total: int, warmup: int, base: float) -> float:
 
 
 def _run_lfw_probe(model, pairs, aligned_root, raw_root, device, max_pairs):
-    """Non-strict in-loop probe. Returns metrics dict; never aborts training."""
+    """Non-strict in-loop probe. Returns metrics dict; never aborts training.
+
+    `max_pairs` is honored only when it's a positive int. None / 0 / negative → use all pairs.
+    Slicing the LFW pair list with a small N gives an unbalanced prefix because pairs.txt
+    orders each fold as N_per_fold positives followed by N_per_fold negatives.
+    """
+    subset = pairs[:max_pairs] if (max_pairs and max_pairs > 0) else pairs
     return evaluate_lfw(
-        model, pairs[:max_pairs] if max_pairs else pairs,
+        model, subset,
         aligned_root=aligned_root, raw_root=raw_root,
         device=device, strict=False,
     )
@@ -1640,9 +1671,11 @@ train:
 
 eval:
   pairs_txt: preprocess-data/lfw/pairs.txt
-  max_pairs_inloop: 1000
+  max_pairs_inloop: null     # full 6000 LFW pairs every probe — spec requires no slicing
   batch_size: 128
 ```
+
+**Note on probe cost:** with `max_pairs_inloop: null` the in-loop probe embeds ~5K unique LFW images every epoch (~30s on H100). Across 20 epochs that's ~10 min extra — acceptable in exchange for an honest spread signal. Slicing the first N pairs would give an unbalanced prefix of LFW's pos-then-neg ordering and corrupt the in-loop gate.
 
 - [ ] **Step 2: Commit**
 
@@ -1722,11 +1755,15 @@ def test_two_phase_smoke_no_collapse(synthetic_manifest, monkeypatch, tmp_path):
     import training_pipeline.src.dataset as ds_mod
     monkeypatch.setattr(ds_mod, "ROOT", workdir)
 
-    # Stub LFW probe — we don't have LFW data in the smoke test.
+    # Stub LFW probe + the upstream loaders — we don't have LFW data in the smoke test.
     import training_pipeline.src.train as train_mod
     def _stub_probe(*args, **kwargs):
         return {"mean_acc": 0.5, "spread": 0.10, "pos_sim_mean": 0.6, "neg_sim_mean": 0.5}
     monkeypatch.setattr(train_mod, "_run_lfw_probe", _stub_probe)
+    # `run_training` reads pairs and discovers the LFW root before either phase begins.
+    # Both must be stubbed or training crashes before the stubbed probe runs.
+    monkeypatch.setattr(train_mod, "load_pairs_txt", lambda p: [])
+    monkeypatch.setattr(train_mod, "find_lfw_identity_root", lambda p: tmp_path)
 
     cfg = {
         "manifest": str(manifest),
@@ -1796,10 +1833,12 @@ git commit -m "test(smoke): two-phase end-to-end on synthetic data with stubbed 
 - [ ] **Step 1: Run all tests**
 
 ```bash
-pytest -v 2>&1 | tail -40
+pytest -v
 ```
 
-Expected: all green except integration tests that need an LFW sample / checkpoint (those should `SKIPPED`).
+(No pipe to `tail` — that masks pytest's exit code and hides failures.)
+
+Expected: all green except integration tests that need an LFW sample / checkpoint (those should `SKIPPED`). Exit code must be 0.
 
 - [ ] **Step 2: If anything red, fix it before pushing to VM. No commit needed unless fixing.**
 
@@ -1812,7 +1851,7 @@ Expected: all green except integration tests that need an LFW sample / checkpoin
 - [ ] **Step 1: Sync code to VM**
 
 ```bash
-SSHPASS='Dickenson@1234#' sshpass -e rsync -avz -e "ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no" \
+SSHPASS="$VM_PASSWORD" sshpass -e rsync -avz -e "ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no" \
   --exclude '.venv' --exclude '__pycache__' --exclude 'preprocess-data' --exclude 'process-data/train' --exclude 'process-data/val' --exclude 'process-data/lfw_pairs' \
   --exclude 'training_pipeline/checkpoints' --exclude 'application/models' --exclude 'evaluation/figs' \
   ./ root@124.197.18.72:/root/IT4432E_Project/
@@ -1821,7 +1860,7 @@ SSHPASS='Dickenson@1234#' sshpass -e rsync -avz -e "ssh -o StrictHostKeyChecking
 - [ ] **Step 2: Kick off training in tmux**
 
 ```bash
-SSHPASS='Dickenson@1234#' sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 '
+SSHPASS="$VM_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 '
   cd /root/IT4432E_Project && source .venv/bin/activate &&
   tmux kill-session -t train 2>/dev/null;
   tmux new-session -d -s train "cd /root/IT4432E_Project && source .venv/bin/activate && python -m training_pipeline.src.train --config training_pipeline/configs/train.yaml 2>&1 | tee /root/IT4432E_Project/training_pipeline/checkpoints/train.log" &&
@@ -1832,7 +1871,7 @@ SSHPASS='Dickenson@1234#' sshpass -e ssh -o StrictHostKeyChecking=no -o Preferre
 - [ ] **Step 3: Monitor**
 
 ```bash
-SSHPASS='Dickenson@1234#' sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 '
+SSHPASS="$VM_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 '
   tail -30 /root/IT4432E_Project/training_pipeline/checkpoints/train.log
 '
 ```
@@ -1850,30 +1889,35 @@ Repeat every couple minutes. Expected: P1 loss decreases; end of P1 prints `spre
 - [ ] **Step 1: Pull checkpoint + history**
 
 ```bash
-SSHPASS='Dickenson@1234#' sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+SSHPASS="$VM_PASSWORD" sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
   root@124.197.18.72:/root/IT4432E_Project/training_pipeline/checkpoints/best.pt \
   ./application/models/best.pt
 
-SSHPASS='Dickenson@1234#' sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+SSHPASS="$VM_PASSWORD" sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
   root@124.197.18.72:/root/IT4432E_Project/training_pipeline/checkpoints/history.json \
   ./training_pipeline/checkpoints/history.json
 ```
 
-- [ ] **Step 2: Run LFW eval on VM** (where data lives)
+- [ ] **Step 2: Copy the trained checkpoint into the eval-expected location on VM, then run LFW eval**
 
 ```bash
-SSHPASS='Dickenson@1234#' sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 '
-  cd /root/IT4432E_Project && source .venv/bin/activate && python -m evaluation.eval_lfw 2>&1 | tail -20
+SSHPASS="$VM_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 '
+  cd /root/IT4432E_Project && source .venv/bin/activate &&
+  cp training_pipeline/checkpoints/best.pt application/models/best.pt &&
+  set -o pipefail; python -m evaluation.eval_lfw 2>&1 | tee /tmp/lfw_eval.log | tail -30
 '
 ```
 
-Expected: a `results.json` blob with mean_acc > 0.80, spread > 0.30, threshold ∈ (0.0, 0.9), `pos_ratio` close to 0.5.
+The `cp` ensures the eval CLI's default `--checkpoint application/models/best.pt` actually points at the newly trained weights, not stale ones. `set -o pipefail` propagates eval failures (non-zero exit) through the pipe instead of swallowing them.
+
+Expected: a `results.json` blob with `mean_acc > 0.80`, `spread > 0.30`, `threshold_global ∈ (0.0, 0.9)`, `pos_ratio` close to 0.5.
 
 - [ ] **Step 3: Run Pins cross-dataset eval on VM**
 
 ```bash
-SSHPASS='Dickenson@1234#' sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 '
-  cd /root/IT4432E_Project && source .venv/bin/activate && python -m evaluation.eval_pins 2>&1 | tail -25
+SSHPASS="$VM_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 '
+  cd /root/IT4432E_Project && source .venv/bin/activate &&
+  set -o pipefail; python -m evaluation.eval_pins 2>&1 | tee /tmp/pins_eval.log | tail -30
 '
 ```
 
@@ -1882,7 +1926,7 @@ Expected: `accuracy_at_lfw_threshold > 0.70`, spread > 0.20.
 - [ ] **Step 4: Pull both result JSONs back**
 
 ```bash
-SSHPASS='Dickenson@1234#' sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+SSHPASS="$VM_PASSWORD" sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
   root@124.197.18.72:/root/IT4432E_Project/evaluation/results.json \
   root@124.197.18.72:/root/IT4432E_Project/evaluation/results_pins.json \
   ./evaluation/
@@ -1902,7 +1946,7 @@ kill $APP_PID
 The diagnostic script from the original collapse hunt is a fast headline check:
 
 ```bash
-SSHPASS='Dickenson@1234#' sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 'cd /root/IT4432E_Project && source .venv/bin/activate && python /tmp/diagnose.py 2>&1 | tail -20'
+SSHPASS="$VM_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 'cd /root/IT4432E_Project && source .venv/bin/activate && python /tmp/diagnose.py 2>&1 | tail -20'
 ```
 
 Expected: same-identity cosine sim ≫ different-identity cosine sim (spread > 0.3).
@@ -1925,7 +1969,7 @@ git commit -m "feat(model): trained checkpoint + LFW/Pins eval results (real dis
 - [ ] **Step 1: Re-execute notebooks on VM**
 
 ```bash
-SSHPASS='Dickenson@1234#' sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 '
+SSHPASS="$VM_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no root@124.197.18.72 '
   cd /root/IT4432E_Project && source .venv/bin/activate &&
   cd process-data && jupyter nbconvert --to notebook --execute --inplace data_processing.ipynb &&
   cd ../training_pipeline && jupyter nbconvert --to notebook --execute --inplace training_results.ipynb &&
@@ -1936,16 +1980,16 @@ SSHPASS='Dickenson@1234#' sshpass -e ssh -o StrictHostKeyChecking=no -o Preferre
 - [ ] **Step 2: Pull executed notebooks + figures back**
 
 ```bash
-SSHPASS='Dickenson@1234#' sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+SSHPASS="$VM_PASSWORD" sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
   root@124.197.18.72:/root/IT4432E_Project/process-data/data_processing.ipynb ./process-data/
 
-SSHPASS='Dickenson@1234#' sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+SSHPASS="$VM_PASSWORD" sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
   root@124.197.18.72:/root/IT4432E_Project/training_pipeline/training_results.ipynb ./training_pipeline/
 
-SSHPASS='Dickenson@1234#' sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+SSHPASS="$VM_PASSWORD" sshpass -e scp -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
   root@124.197.18.72:/root/IT4432E_Project/evaluation/evaluation_results.ipynb ./evaluation/
 
-SSHPASS='Dickenson@1234#' sshpass -e scp -r -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+SSHPASS="$VM_PASSWORD" sshpass -e scp -r -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no \
   'root@124.197.18.72:/root/IT4432E_Project/evaluation/figs/*' ./evaluation/figs/
 ```
 
