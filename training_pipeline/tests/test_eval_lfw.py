@@ -72,3 +72,54 @@ def test_load_image_with_fallback_raises_when_both_missing(tmp_path):
     raw = tmp_path / "raw" / "Alice_0001.jpg"
     with pytest.raises((AssertionError, FileNotFoundError)):
         _load_image_with_fallback(aligned, raw)
+
+
+from training_pipeline.src.eval_lfw import (
+    _assert_distribution_sane,
+    _assert_threshold_sane,
+)
+
+
+def _metrics(pos_mean=0.7, neg_mean=0.3, pos_std=0.05, pos_ratio=0.5, threshold=0.5):
+    return {
+        "pos_sim_mean": pos_mean,
+        "neg_sim_mean": neg_mean,
+        "spread": pos_mean - neg_mean,
+        "pos_sim_std": pos_std,
+        "neg_sim_std": 0.05,
+        "pos_ratio": pos_ratio,
+        "threshold_global": threshold,
+    }
+
+
+def test_distribution_sane_passes_on_real():
+    _assert_distribution_sane(_metrics())  # no exception
+
+
+def test_distribution_collapse_fires_on_low_spread():
+    with pytest.raises(AssertionError, match="COLLAPSED"):
+        _assert_distribution_sane(_metrics(pos_mean=0.997, neg_mean=0.996))
+
+
+def test_distribution_collapse_fires_on_tight_std():
+    with pytest.raises(AssertionError, match="too tight"):
+        _assert_distribution_sane(_metrics(pos_std=0.001))
+
+
+def test_distribution_label_leak_fires():
+    with pytest.raises(AssertionError, match="LABEL LEAK"):
+        _assert_distribution_sane(_metrics(pos_ratio=0.97))
+
+
+def test_threshold_sane_passes_on_real():
+    _assert_threshold_sane(_metrics(threshold=0.45))
+
+
+def test_threshold_at_lower_bound_fires():
+    with pytest.raises(AssertionError, match="THRESHOLD AT BOUND"):
+        _assert_threshold_sane(_metrics(threshold=-1.0))
+
+
+def test_threshold_at_upper_bound_fires():
+    with pytest.raises(AssertionError, match="THRESHOLD AT BOUND"):
+        _assert_threshold_sane(_metrics(threshold=0.95))
