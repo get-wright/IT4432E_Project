@@ -1,32 +1,35 @@
 # Face Recognition with Siamese Network
 
-ResNet50 + triplet-loss Siamese network trained on CASIA-WebFace, evaluated on LFW, served via a FastAPI web app that captures faces from the browser webcam.
+Course project for IT4432E (HUST). Trains a face embedding network with triplet loss, evaluates it on LFW, and serves it through a small web app that does enrollment and verification from the browser webcam.
 
-**Result: 97.48% ± 1.46% LFW verification accuracy** (10-fold cross-validation, 2378 pairs). See [`evaluation/results.json`](evaluation/results.json) and [`evaluation/evaluation_results.ipynb`](evaluation/evaluation_results.ipynb).
+Pipeline: CASIA-WebFace → MTCNN alignment → ResNet50 + 512-d embedding head trained with batch-hard triplet loss → LFW 10-fold verification benchmark → FastAPI app with SQLite-backed enrollment store.
 
-See [design spec](docs/superpowers/specs/2026-05-17-face-recognition-siamese-design.md) and [implementation plan](docs/superpowers/plans/2026-05-17-face-recognition-siamese.md) for full context.
+LFW verification accuracy: **97.48% ± 1.46%** (10-fold CV, 2,378 pairs). Training ran ~17 minutes on a single H100 80GB.
 
-## Repo layout
-- `preprocess-data/` — raw datasets (gitignored) + sanity-check script
-- `process-data/` — MTCNN-aligned faces + analysis notebook
-- `training_pipeline/` — model, loss, training entry, results notebook
-- `evaluation/` — final LFW benchmark + report notebook + figures
-- `application/` — FastAPI backend + browser-webcam frontend
-- `infra/` — GPU VM provisioning + dataset download scripts
+## Layout
 
-## Quickstart
+- `preprocess-data/` — raw Kaggle datasets (gitignored) and a sanity-check script
+- `process-data/` — MTCNN alignment script, output manifest, and an analysis notebook
+- `training_pipeline/` — model, loss, sampler, training entry, results notebook, unit tests
+- `evaluation/` — LFW 10-fold benchmark CLI, results JSON, report notebook, figures
+- `application/` — FastAPI backend, vanilla-JS webcam frontend, integration tests, Dockerfile
+- `infra/` — VM setup and training launch scripts
+- `docs/superpowers/` — design spec and implementation plan
 
-After cloning, with a trained `application/models/best.pt` checkpoint in place:
+## Running the app
+
+The trained checkpoint lives at `application/models/best.pt`.
 
 ```bash
 uv venv --python 3.11 .venv
 source .venv/bin/activate
 uv pip install -e ".[dev]"
-cd application
-APP_THRESHOLD=0.5 uvicorn backend.main:app --reload
+uvicorn application.backend.main:app --reload
 ```
 
-Open <http://localhost:8000>, grant camera permission, enroll a face, then verify.
+Open `http://localhost:8000`, grant camera permission. The page has three tabs: Enroll (name + capture), Verify (capture → best match + cosine similarity), Enrolled (list / delete). Threshold defaults to 0.5; override with `APP_THRESHOLD`.
+
+API: `POST /enroll`, `POST /verify`, `GET /enrolled`, `DELETE /enrolled/{id}`. Both `enroll` and `verify` accept `{image: <base64 jpeg>}`; `enroll` additionally takes `name`. The model is loaded once at startup and runs on CPU.
 
 ## Tests
 
@@ -34,44 +37,28 @@ Open <http://localhost:8000>, grant camera permission, enroll a face, then verif
 pytest -v
 ```
 
-9 unit tests (model shapes, triplet loss math, sampler invariants, DB roundtrip, training-loop smoke test). The 2 integration tests in `application/tests/` auto-skip if no checkpoint / no LFW sample is present locally.
+Unit tests cover model output shape, triplet loss math, PKSampler invariants, enrollment DB roundtrip, and a short training-loop smoke test. The two integration tests in `application/tests/` require the checkpoint and an LFW sample on disk and auto-skip otherwise.
 
-## Training pipeline
+## Training
 
-Datasets:
-- **CASIA-WebFace** (raw images from `nhatdealin/casiawebface-dataset-crop`) — 1,249 identities × up to 50 images = 47,751 aligned faces (90/10 train/val split).
-- **LFW** (`jessicali9530/lfw-dataset`) — 901 identities × up to 200 images = 7,240 aligned faces. Used only for evaluation (held out from training).
-- **CelebA** was attempted but the Kaggle dump lacked `identity_CelebA.txt` (only attribute CSVs) — dropped.
+Data:
+- CASIA-WebFace (`nhatdealin/casiawebface-dataset-crop`) — 1,249 identities, capped at 50 images per identity, 90/10 train/val split → 47,751 aligned faces for training.
+- LFW (`jessicali9530/lfw-dataset`) — 901 identities, capped at 200, 7,240 aligned faces, held out entirely for evaluation.
+- CelebA was in the original plan but the Kaggle dump shipped without `identity_CelebA.txt`, so it was dropped.
 
-Architecture:
-- `torchvision.models.resnet50` (ImageNet V2 pretrained) → Linear(2048, 512) → L2 normalize.
-- **BatchHard triplet loss** with margin 0.3 (Hermans et al., 2017).
-- **PKSampler** — each batch is 32 identities × 4 images = 128 samples.
-- AdamW with separate LRs: backbone 3e-5, head 3e-4. Cosine schedule with 500-step warmup. Mixed precision.
-- 20 epochs × 1500 batches = 30K steps. Wall-clock: ~17 minutes on a single NVIDIA H100 80GB.
+Model: `torchvision.models.resnet50` (ImageNet V2 weights) feeds a `Linear(2048, 512)` head whose output is L2-normalised. Loss is batch-hard triplet (margin 0.3, Hermans et al. 2017). Batches are built by a PKSampler — 32 identities × 4 images = 128 samples per batch, 1,500 batches per epoch, 20 epochs. AdamW with split learning rates (backbone 3e-5, head 3e-4), cosine schedule with 500-step warmup, mixed precision.
 
-Final training loss 0.14 (from 0.33). Best LFW in-loop accuracy 0.976 (1000-pair subset, threshold tuned via 10-fold CV).
+Final train loss 0.14 (down from 0.33). Best LFW in-loop accuracy 0.976 on a 1k-pair subset; full 10-fold CV reported above.
 
-## Application
+Reproducing training:
+```bash
+bash infra/setup_vm.sh         # installs PyTorch + downloads + aligns datasets
+bash infra/run_training.sh     # 20 epochs, ~17 min on H100
+python -m evaluation.eval_lfw  # 10-fold benchmark, writes evaluation/results.json
+```
 
-- `POST /enroll` — accepts `{name, image: base64 jpeg}`, runs MTCNN alignment, computes embedding, stores in SQLite + `.npy`.
-- `POST /verify` — accepts `{image: base64 jpeg}`, computes embedding, cosine similarity vs all enrolled, returns best match + score + threshold + matched flag.
-- `GET /enrolled` / `DELETE /enrolled/{id}` — list/remove enrollments.
-- Frontend is a single page (vanilla HTML + JS + CSS) with live webcam preview and three tabs (Enroll / Verify / Enrolled).
-- Light + dark themes via `prefers-color-scheme`. 44px touch targets. Visible focus outlines.
+## Notes from the build
 
-## Infra
-
-Training ran on a Vietnamese provider 1×H100 80GB VM (~$2.70/hr × ~30min ≈ $1.50). See `infra/setup_vm.sh` for the VM-side install + dataset download script. Original `infra/create_vm.sh` targets GCP A100 (replace if you're not on GCP).
-
-## Adjusted from original design spec
-
-- Directory `training-pipeline/` renamed to `training_pipeline/` to satisfy Python import system (hyphens aren't valid in module names).
-- CelebA dropped — the Kaggle dump lacked identity labels.
-- GCP A100 replaced with a non-GCP H100 (project had zero `GPUS_ALL_REGIONS` quota and Google denied the increase).
-- `utils.py` doesn't ship `upload_to_gcs` / `stop_vm_self` — handled out-of-band on the non-GCP provider.
-- `infra/create_vm.sh` is now provider-flavoured for GCP only and is not used in the final training run; `infra/setup_vm.sh` was generalised for Ubuntu 22.04 + NVIDIA-driver VMs.
-
-## Cost guardrail
-
-The H100 VM is **not** automatically stopped after training. Manually shut it down via your provider's dashboard once you've pulled `application/models/best.pt` to your laptop.
+- `training-pipeline/` became `training_pipeline/` so Python's import system would accept it.
+- Original infra plan targeted GCP A100. The project's GCP account had global GPU quota fixed at zero and was ineligible for an increase, so training moved to a non-GCP H100 provider. `infra/create_vm.sh` is the GCP path and is unused; `infra/setup_vm.sh` is the generic Ubuntu-22.04-with-NVIDIA-driver path that actually ran.
+- The provider has no auto-stop API. The VM must be shut down manually from the provider dashboard after `best.pt` is pulled, or it will keep billing.
