@@ -13,6 +13,10 @@ from facenet_pytorch import MTCNN
 from PIL import Image
 from tqdm import tqdm
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent))
+from lfw_layout import find_lfw_identity_root
+
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "preprocess-data"
 OUT = ROOT / "process-data"
@@ -80,29 +84,17 @@ def build_pairs_celeba() -> list[tuple[Path, str]]:
 
 
 def build_pairs_lfw() -> list[tuple[Path, str]]:
-    """LFW Kaggle dump may double-nest lfw-deepfunneled/ → walk for the level
-    whose children are identity directories of jpgs."""
+    """Find LFW identity root via shared helper, emit (img, identity_label) pairs."""
     base = RAW / "lfw"
-    # Find any directory whose children are dirs whose children include jpgs.
-    for candidate in base.rglob("*"):
-        if not candidate.is_dir():
+    identity_root = find_lfw_identity_root(base)
+    pairs: list[tuple[Path, str]] = []
+    for ident_dir in sorted(identity_root.iterdir()):
+        if not ident_dir.is_dir():
             continue
-        try:
-            subdirs = [d for d in candidate.iterdir() if d.is_dir()]
-        except Exception:
-            continue
-        if len(subdirs) < 100:
-            continue
-        # Sniff: does the first subdir contain at least one jpg?
-        for d in subdirs[:5]:
-            if any(f.suffix.lower() in IMG_EXT for f in d.iterdir()):
-                pairs = []
-                for ident_dir in subdirs:
-                    for img in ident_dir.iterdir():
-                        if img.suffix.lower() in IMG_EXT:
-                            pairs.append((img, f"lfw_{ident_dir.name}"))
-                return pairs
-    raise SystemExit("LFW identity-folder root not found")
+        for img in sorted(ident_dir.iterdir()):
+            if img.suffix.lower() in IMG_EXT:
+                pairs.append((img, f"lfw_{ident_dir.name}"))
+    return pairs
 
 
 def align_batch(mtcnn: MTCNN, src_paths: list[Path], out_paths: list[Path]) -> list[bool]:
