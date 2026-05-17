@@ -13,8 +13,6 @@ from facenet_pytorch import MTCNN
 from PIL import Image
 from tqdm import tqdm
 
-import sys as _sys
-_sys.path.insert(0, str(Path(__file__).parent))
 from lfw_layout import find_lfw_identity_root
 
 ROOT = Path(__file__).resolve().parent.parent
