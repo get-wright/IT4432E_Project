@@ -28,20 +28,24 @@ def _looks_like_identity_dir(d: Path) -> bool:
 def find_lfw_identity_root(raw_dir: Path) -> Path:
     """Find the directory that directly contains LFW identity folders.
 
-    Walks down at most 3 levels of nesting. Raises FileNotFoundError if no
-    identity-shaped directory is found.
+    Walks down at most 3 levels of nesting, skipping hidden directories.
+    Raises FileNotFoundError if no identity-shaped directory is found.
     """
     raw_dir = Path(raw_dir)
     candidates = [raw_dir]
-    for depth in range(3):
+    for _ in range(3):
         next_candidates: list[Path] = []
         for c in candidates:
             if not c.is_dir():
                 continue
+            subdirs: list[Path] = []
             for sub in sorted(c.iterdir()):
+                if not sub.is_dir() or sub.name.startswith("."):
+                    continue
                 if _looks_like_identity_dir(sub):
                     return c
-            next_candidates.extend(s for s in c.iterdir() if s.is_dir())
+                subdirs.append(sub)
+            next_candidates.extend(subdirs)
         candidates = next_candidates
         if not candidates:
             break
