@@ -94,22 +94,24 @@ def build_pairs_lfw() -> list[tuple[Path, str]]:
 
 
 def align_batch(mtcnn: MTCNN, src_paths: list[Path], out_paths: list[Path]) -> list[bool]:
-    """Open images, run MTCNN, save aligned crops. Returns success flag per input."""
-    imgs = []
-    valid_idx = []
-    for i, p in enumerate(src_paths):
+    """Open images, run MTCNN one-by-one, save aligned crops.
+
+    facenet-pytorch 2.6.0 has a NumPy >=1.24 incompatibility for batched calls
+    (inhomogeneous array). Single-image calls work fine and on H100 still hit
+    ~50-100 imgs/sec.
+    """
+    ok: list[bool] = []
+    for sp, op in zip(src_paths, out_paths):
         try:
-            imgs.append(Image.open(p).convert("RGB"))
-            valid_idx.append(i)
+            img = Image.open(sp).convert("RGB")
         except Exception:
-            pass
-    if not imgs:
-        return [False] * len(src_paths)
-    save_targets = [str(out_paths[i]) for i in valid_idx]
-    aligned = mtcnn(imgs, save_path=save_targets)
-    ok = [False] * len(src_paths)
-    for j, i in enumerate(valid_idx):
-        ok[i] = aligned[j] is not None
+            ok.append(False)
+            continue
+        try:
+            aligned = mtcnn(img, save_path=str(op))
+        except Exception:
+            aligned = None
+        ok.append(aligned is not None)
     return ok
 
 
