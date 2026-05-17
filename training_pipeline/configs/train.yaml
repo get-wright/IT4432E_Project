@@ -17,6 +17,6 @@ train:
   embedding_dim: 512
 
 eval:
-  pairs_txt: preprocess-data/lfw/lfw_funneled/pairs.txt
+  pairs_txt: preprocess-data/lfw/pairs.txt
   max_pairs_inloop: 1000
   batch_size: 128
