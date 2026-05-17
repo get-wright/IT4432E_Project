@@ -2,7 +2,7 @@
 name = "face-recognition-siamese"
 version = "0.1.0"
 description = "Face recognition with Siamese network — CASIA/CelebA training, LFW eval, FastAPI app."
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "torch>=2.2",
     "torchvision>=0.17",
