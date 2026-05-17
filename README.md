@@ -41,10 +41,12 @@ Unit tests cover model output shape, triplet loss math, PKSampler invariants, en
 
 ## Training
 
-Data:
-- CASIA-WebFace (`nhatdealin/casiawebface-dataset-crop`) — 1,249 identities, capped at 50 images per identity, 90/10 train/val split → 47,751 aligned faces for training.
-- LFW (`jessicali9530/lfw-dataset`) — 901 identities, capped at 200, 7,240 aligned faces, held out entirely for evaluation.
-- CelebA was in the original plan but the Kaggle dump shipped without `identity_CelebA.txt`, so it was dropped.
+Data (from Kaggle):
+- [CASIA-WebFace (cropped)](https://www.kaggle.com/datasets/nhatdealin/casiawebface-dataset-crop) — `nhatdealin/casiawebface-dataset-crop`. 1,249 identities, capped at 50 images per identity, 90/10 train/val split → 47,751 aligned faces for training.
+- [LFW (Labeled Faces in the Wild)](https://www.kaggle.com/datasets/jessicali9530/lfw-dataset) — `jessicali9530/lfw-dataset`. 901 identities, capped at 200, 7,240 aligned faces, held out entirely for evaluation.
+- [CelebA](https://www.kaggle.com/datasets/jessicali9530/celeba-dataset) — `jessicali9530/celeba-dataset`. Was in the original plan but this Kaggle dump shipped without `identity_CelebA.txt`, so it was dropped.
+
+Reference implementation that shaped the design: [Face Recognition with Siamese Network](https://www.kaggle.com/code/tatianakushniruk/face-recognition-with-siamese-network) by tatianakushniruk.
 
 Model: `torchvision.models.resnet50` (ImageNet V2 weights) feeds a `Linear(2048, 512)` head whose output is L2-normalised. Loss is batch-hard triplet (margin 0.3, Hermans et al. 2017). Batches are built by a PKSampler — 32 identities × 4 images = 128 samples per batch, 1,500 batches per epoch, 20 epochs. AdamW with split learning rates (backbone 3e-5, head 3e-4), cosine schedule with 500-step warmup, mixed precision.
 
