@@ -109,7 +109,7 @@ def process_split(
     train_root: Path,
     val_root: Path,
     lfw_root: Path,
-    failures_writer: csv.writer,
+    failures_writer,
     manifest_rows: list[dict],
 ) -> None:
     by_id: dict[str, list[Path]] = {}
