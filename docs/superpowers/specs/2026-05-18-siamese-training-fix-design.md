@@ -45,17 +45,21 @@ Phase 1 (epochs 1–3, softmax warmup):
 
 Phase 2 (epochs 4–20, semi-hard triplet):
 
-  image → backbone → embedding head → (no L2 norm) → embedding ∈ R^512
-                                                          ↓
-                                      semi-hard triplet selection within PK batch
-                                                          ↓
-                                              softplus(d_ap - d_an)
+  image → backbone → embedding head → raw 512-d vector
+                                          ↓
+                                   F.normalize inside loss  ← matches FaceNet; prevents norm-scale escape
+                                          ↓
+                      semi-hard triplet selection within PK batch (Euclidean on unit-sphere)
+                                          ↓
+                                  softplus(d_ap - d_an)
 
 Inference / eval:
 
   image → backbone → embedding head → F.normalize(out, p=2, dim=1) → unit-norm embedding
   cosine_sim(a, b) = a · b
 ```
+
+**Why L2-normalize inside the loss (not at the model output):** Training on un-normalized embeddings lets the model satisfy `softplus(d_ap - d_an)` by scaling overall embedding norms, not by improving angular identity structure. At eval we normalize and that fake "progress" disappears. FaceNet normalizes inside the loss for exactly this reason. We keep the model's `forward` un-normalized so `embed_normalized()` stays explicit and the classifier head in Phase 1 sees raw vectors (better with CE), but the triplet loss in Phase 2 explicitly normalizes its input on entry.
 
 ## Components
 
@@ -70,7 +74,8 @@ Inference / eval:
 ### `training_pipeline/src/loss.py`
 
 - Keep `_pairwise_dist` (correct, unchanged).
-- New `semi_hard_triplet_loss(emb, labels, margin=0.3)`:
+- New `semi_hard_triplet_loss(emb, labels, margin=0.3) -> tuple[Tensor, int]`:
+  - **First line: `emb = F.normalize(emb, p=2, dim=1)`** — distances computed on the unit hypersphere, no norm-scale escape.
   - For each (anchor a, positive p) where `labels[a] == labels[p]` and `a != p`:
     1. Compute `d_ap = dist[a, p]`.
     2. Build mask over j ≠ a where `labels[j] != labels[a]` and `d_ap < dist[a, j] < d_ap + margin`.
@@ -78,6 +83,8 @@ Inference / eval:
     4. Elif any j with `dist[a, j] > d_ap` → take argmin of those (closest harder-than-positive negative).
     5. Else → skip this anchor.
   - Collected triplets pass through `softplus_loss(d_ap, d_an) = log(1 + exp(d_ap - d_an))`. Mean over selected triplets.
+  - Returns `(loss, n_triplets)` so the train loop can skip `optimizer.step()` cleanly when `n_triplets == 0`.
+  - **No-triplets contract:** if no anchor finds a valid negative, returns `(emb.sum() * 0.0, 0)` — a properly-graph-connected zero so `loss.backward()` is safe but produces no gradients. Caller checks `n_triplets > 0` before stepping.
 - New `softplus_loss(d_ap, d_an)` — small helper, one-line `F.softplus(d_ap - d_an)`.
 - Keep `batch_hard_triplet_loss` available for ablation but unused in the main run.
 
@@ -100,8 +107,8 @@ Phase 1 loop:
 1. Build `FaceEmbedding` + `ClassifierHead(512, n_identities)` (n derived from training manifest).
 2. AdamW over both with split learning rates.
 3. Per batch: forward → classifier logits → CE → backward → step.
-4. End of epoch: run LFW probe (full 6000 pairs, fallback to raw on MTCNN miss). Print spread, log to history.json.
-5. After last warmup epoch: assert `spread > 0.05`. If not, abort training (collapse signal — something is wrong with data or env).
+4. End of epoch: run LFW probe (full 6000 pairs, fallback to raw on MTCNN miss) **with `strict=False`** — no assertions, just metrics for logging. Append `{spread, accuracy, pos_mean, neg_mean}` to `history.json`.
+5. **After all phase-1 epochs are done**, evaluate the spread once. If `spread > 0.05` → handoff to phase 2. If not → abort with `RuntimeError("phase 1 produced collapsed embeddings — fix data/env before continuing")`. Early epochs are allowed to be weak; the gate fires only once at the boundary.
 6. Save `checkpoints/phase1_end.pt`.
 
 Phase 2 loop:
@@ -109,32 +116,52 @@ Phase 2 loop:
 2. Re-init optimizer with backbone + embedding head only, same split LRs.
 3. Switch sampler to PKSampler (P=32, K=4) with `batches_per_epoch=1500`.
 4. Cosine LR schedule across phase-2 epochs only, with 500-step warmup at the start of phase 2.
-5. Per batch: forward → semi-hard triplet loss → backward → step. Mixed precision.
-6. End of epoch: LFW probe + history.json append. Update `checkpoints/best.pt` if this epoch's probe LFW > best so far.
+5. Per batch: forward → `loss, n_triplets = semi_hard_triplet_loss(emb, labels)` → `if n_triplets > 0: loss.backward(); optimizer.step()`. Mixed precision. Log running `n_triplets` per epoch — a chronic zero is a sampler/mining bug.
+6. End of epoch: LFW probe **with `strict=False`** + history.json append. Update `checkpoints/best.pt` if this epoch's probe LFW > best so far AND `spread > 0.05` (don't promote a collapsed checkpoint to best, even if numerics happen to favor it).
 
 After phase 2: write `checkpoints/last.pt`.
 
 ### `training_pipeline/src/eval_lfw.py`
 
-- `load_pairs_txt(pairs_txt)`: returns **all 6000 pairs** with no filtering on disk presence.
-- New `_load_image_with_fallback(aligned_path: Path, raw_path: Path)`:
-  - If `aligned_path.exists()`: use it via the standard `eval_transform`.
-  - Else: open `raw_path`, take center crop = 80% of `min(w, h)`, resize to 160×160, then apply `eval_transform`. Always succeeds.
-- `_PairImgDataset.__init__(pairs)` accepts the pair list directly and builds `(aligned_path, raw_path)` for each unique image.
-- `evaluate_lfw(...)` adds four sanity assertions before the threshold sweep, in this order:
+**Pair object.** `load_pairs_txt` now returns `list[LfwPair]` where:
 
 ```python
-pos = sims[labels == 1]
-neg = sims[labels == 0]
-spread = pos.mean() - neg.mean()
-assert spread > 0.05, f"COLLAPSED: pos={pos.mean():.3f}, neg={neg.mean():.3f}"
-assert pos.std() > 0.01, f"COLLAPSED: pos std={pos.std():.4f} too tight"
-assert 0.4 < labels.mean() < 0.6, f"LABEL LEAK: {labels.mean():.2%} positive"
-# (after threshold sweep)
-assert -0.5 < threshold_global < 0.95, f"THRESHOLD AT BOUND: {threshold_global}"
+@dataclass
+class LfwPair:
+    name1: str
+    idx1: int
+    name2: str
+    idx2: int
+    same: int  # 0 or 1
 ```
 
-Any failure → `RuntimeError("eval sanity check failed: <msg>")`. The training script catches this exception and **does not** update `best.pt`.
+The evaluator constructs aligned + raw paths from these fields plus two explicit roots (`aligned_root`, `raw_root`) passed by the caller. No filtering on disk presence at load time — all 6000 pairs are returned.
+
+**Aligned and raw roots:**
+- `aligned_root = ROOT / "process-data/lfw_pairs"` — populated by `process.py`.
+- `raw_root = ROOT / "preprocess-data/lfw/lfw-deepfunneled"` — the raw Kaggle dump, always on disk.
+
+For each `LfwPair`, path construction is `<root>/<name>/<name>_<idx:04d>.jpg` for both roots. `_load_image_with_fallback(aligned, raw)`:
+- If `aligned.exists()` → load aligned, apply `eval_transform`.
+- Else → load raw, center-crop to `0.8 * min(w, h)` square, resize 160×160, apply `eval_transform`.
+- Asserts `raw.exists()` — if even raw is missing, that's a setup bug, not a runtime path. Raise.
+
+**Sanity assertions parameterized by `strict`:**
+
+```python
+def evaluate_lfw(model, pairs, ..., strict: bool = True) -> dict:
+    ...
+    metrics = {...}  # always computed
+    if strict:
+        assert metrics['spread'] > 0.05, f"COLLAPSED: pos={pos.mean():.3f}, neg={neg.mean():.3f}"
+        assert metrics['pos_sim_std'] > 0.01, f"COLLAPSED: pos std={pos.std():.4f} too tight"
+        assert 0.4 < metrics['pos_ratio'] < 0.6, f"LABEL LEAK: {metrics['pos_ratio']:.2%} positive"
+        assert -0.5 < metrics['threshold_global'] < 0.95, f"THRESHOLD AT BOUND: {metrics['threshold_global']}"
+    return metrics
+```
+
+- Training loop calls with `strict=False` — returns metrics dict including `spread`. Training itself decides whether to abort.
+- Final CLI run (`python -m evaluation.eval_lfw`) calls with `strict=True`. Any failure → `RuntimeError`, no `results.json` written.
 
 ### `evaluation/eval_lfw.py` (CLI)
 
@@ -142,7 +169,17 @@ Unchanged in structure; calls into `evaluate_lfw` which now enforces sanity. Out
 
 ### `evaluation/eval_pins.py` (new)
 
-Same structure as `eval_lfw.py`. Loads the already-downloaded Pins dataset, builds 1500 positive + 1500 negative pairs at fixed seed, evaluates using the same `evaluate_lfw` engine with `pairs` constructed for Pins. Same sanity assertions apply. Output `evaluation/results_pins.json`.
+Loads the already-downloaded Pins dataset, builds 1500 positive + 1500 negative pairs at fixed seed. Aligns each unique image once with MTCNN; falls back to center-crop raw on failure (same pattern as LFW eval). Embeds, computes cosine sim per pair.
+
+**Crucially: uses the LFW-tuned threshold as a fixed parameter — does NOT tune its own threshold.** Reads `evaluation/results.json["threshold_global"]` and reports accuracy at that fixed threshold. This is the actual generalization test; tuning a threshold on Pins would just measure "can the model be tuned for Pins" instead.
+
+Output `evaluation/results_pins.json` includes:
+- `accuracy_at_lfw_threshold` (the headline number for generalization)
+- `lfw_threshold_used`
+- `pos_sim_mean`, `neg_sim_mean`, `spread` (for inspection)
+- For reference / curiosity only: `accuracy_at_pins_tuned_threshold` and `pins_tuned_threshold` — clearly labeled as not the headline.
+
+Same `strict=True` sanity assertions apply (no label-leak, spread > 0.05).
 
 ### Notebooks
 
@@ -157,23 +194,28 @@ Same structure as `eval_lfw.py`. Loads the already-downloaded Pins dataset, buil
 ## Error handling
 
 - MTCNN alignment fails on a training image → already filtered at preprocess time; manifest only contains successful aligns. Phase 1/2 dataset never sees these.
-- MTCNN alignment fails on an LFW image at eval time → falls back to center-cropped raw image. Never `None`.
-- Eval sanity assertion fails → `RuntimeError`, no results written, training script logs and refuses to update `best.pt`.
-- VM OOM or process kill → checkpoints `phase1_end.pt`, `last.pt`, `best.pt` survive; resume by re-running phase 2 from `phase1_end.pt` (resume logic is a stretch goal, not required for first attempt).
+- Aligned LFW image missing → fall back to center-cropped raw image via `_load_image_with_fallback`. Never `None`.
+- Raw LFW image missing → setup bug; `_load_image_with_fallback` raises `AssertionError`. Not a runtime path.
+- Semi-hard mining selects zero triplets in a batch → loss = `emb.sum() * 0.0`, n_triplets = 0; train loop skips `optimizer.step()`. A persistent run of zero-triplet batches is logged as a warning and aborts after 100 consecutive (signals broken sampler).
+- Strict eval sanity assertion fails → `RuntimeError`, no `results.json` written. Final CLI exits non-zero.
+- In-loop probe (strict=False) returns spread < 0.05 mid-training → just a log line; not an abort. The phase-1-end gate fires only after the full warmup is done.
+- VM OOM or process kill → `phase1_end.pt`, `last.pt`, `best.pt` survive; resume by re-running phase 2 from `phase1_end.pt` (resume logic is a stretch goal, not required for first attempt).
 
 ## Testing strategy
 
 Unit tests in `training_pipeline/tests/`:
+- `test_loss.py::test_semi_hard_normalizes_input` — pass embeddings with non-unit norms, verify pairwise distances inside the loss are computed on unit-normalized vectors (no norm-scale escape).
 - `test_loss.py::test_semi_hard_picks_correct_band` — handcrafted PK batch, verify selected negative is in `(d_ap, d_ap + margin)`.
 - `test_loss.py::test_semi_hard_fallback` — no in-band negative, verify argmin-greater-than-d_ap fallback.
-- `test_loss.py::test_semi_hard_no_valid_skips` — no negative satisfies `d_an > d_ap`, verify anchor skipped without NaN.
+- `test_loss.py::test_semi_hard_no_valid_skips` — no negative satisfies `d_an > d_ap`, verify `(loss, n_triplets) = semi_hard_triplet_loss(...)` returns `n_triplets == 0` and `loss.backward()` is safe (no NaN, no graph error).
+- `test_loss.py::test_semi_hard_returns_n_triplets` — verify return signature is `(Tensor, int)` and `n_triplets` matches the number of triplets actually used in the mean.
 - `test_loss.py::test_softplus_smooth_gradient` — verify `softplus_loss` returns finite gradient on cases where hard hinge would return 0.
 - `test_model.py::test_forward_unnormalized` — verify `model(x)` norms ≠ 1 (we removed L2-norm from training path).
 - `test_model.py::test_embed_normalized` — verify `embed_normalized(x)` norms = 1 ± 1e-5.
-- `test_eval_lfw.py::test_load_pairs_no_drop` — pass a pairs.txt with 6 pairs where 1 aligned image is missing, assert all 6 pairs still in return value.
-- `test_eval_lfw.py::test_load_image_with_fallback` — deliberately missing aligned path, raw path present → returns tensor.
-- `test_eval_lfw.py::test_sanity_collapse_fires` — feed collapsed embeddings, assert `RuntimeError`.
-- `test_eval_lfw.py::test_sanity_label_leak_fires` — feed 95%-positive pairs, assert `RuntimeError`.
+- `test_eval_lfw.py::test_load_pairs_returns_all` — pass a pairs.txt with 6 pairs where 1 aligned image is missing, assert all 6 `LfwPair` objects still in return value.
+- `test_eval_lfw.py::test_load_image_with_fallback` — deliberately missing aligned path, raw path present → returns tensor; missing both → raises.
+- `test_eval_lfw.py::test_strict_collapse_fires` — feed collapsed embeddings with `strict=True`, assert `RuntimeError`. With `strict=False`, returns dict containing low spread.
+- `test_eval_lfw.py::test_strict_label_leak_fires` — feed 95%-positive pairs with `strict=True`, assert `RuntimeError`.
 
 End-to-end smoke (update existing `test_train_smoke`):
 - 5 identities × 4 synthetic images, 1 phase-1 epoch + 1 phase-2 epoch, batch=8, no LFW probe.
