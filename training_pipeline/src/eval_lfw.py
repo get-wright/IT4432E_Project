@@ -69,7 +69,7 @@ def _load_image_with_fallback(aligned: Path, raw: Path) -> tuple[torch.Tensor, b
     side = int(0.8 * min(w, h))
     l = (w - side) // 2
     t = (h - side) // 2
-    img = img.crop((l, t, l + side, t + side)).resize((160, 160), Image.BILINEAR)
+    img = img.crop((l, t, l + side, t + side)).resize((160, 160), Image.Resampling.BILINEAR)
     return _raw_fallback_tf(img), True
 
 
@@ -155,7 +155,7 @@ def evaluate_lfw(
     fallback_log: list[bool] = []
     ds = _PairImgDataset(unique, fallback_log)
     # num_workers=0 so the shared fallback_log isn't duplicated per worker.
-    dl = DataLoader(ds, batch_size=batch_size, num_workers=0, pin_memory=True)
+    dl = DataLoader(ds, batch_size=batch_size, num_workers=0)
 
     model.eval()
     embs_list: list[torch.Tensor] = []
