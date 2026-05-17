@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+
+# Data (large, downloaded at runtime)
+preprocess-data/casia-webface/
+preprocess-data/celeba/
+preprocess-data/lfw/
+process-data/train/
+process-data/val/
+process-data/lfw_pairs/
+process-data/manifest.parquet
+process-data/alignment_failures.csv
+
+# Training artifacts
+training-pipeline/checkpoints/
+training-pipeline/tensorboard_logs/
+training-pipeline/*.log
+
+# App runtime
+application/embeddings/
+application/models/
+
+# Secrets
+**/.kaggle/
+**/kaggle.json
+.env
+
+# OS
+.DS_Store
+Thumbs.db
