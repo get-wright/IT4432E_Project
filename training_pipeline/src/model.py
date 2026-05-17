@@ -4,6 +4,13 @@ from torchvision.models import resnet50, ResNet50_Weights
 
 
 class FaceEmbedding(nn.Module):
+    """ResNet50 backbone + Linear(2048, embedding_dim) head.
+
+    `forward` returns the raw embedding (un-normalized). Use `embed_normalized`
+    when you need a unit-norm vector (eval, app inference). The Phase 2 triplet
+    loss normalizes internally; the Phase 1 classifier head consumes the raw vector.
+    """
+
     def __init__(self, embedding_dim: int = 512, pretrained: bool = True):
         super().__init__()
         weights = ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
@@ -12,5 +19,22 @@ class FaceEmbedding(nn.Module):
         self.backbone.fc = nn.Linear(in_f, embedding_dim)
 
     def forward(self, x):
-        x = self.backbone(x)
-        return F.normalize(x, p=2, dim=1)
+        return self.backbone(x)
+
+    def embed_normalized(self, x):
+        return F.normalize(self.forward(x), p=2, dim=1)
+
+
+class ClassifierHead(nn.Module):
+    """Linear classifier over identity labels for Phase 1 softmax warmup.
+
+    No bias: per-class weight vectors should be comparable in norm — standard
+    for face-recognition CE warmup recipes.
+    """
+
+    def __init__(self, embedding_dim: int, n_identities: int):
+        super().__init__()
+        self.fc = nn.Linear(embedding_dim, n_identities, bias=False)
+
+    def forward(self, emb):
+        return self.fc(emb)

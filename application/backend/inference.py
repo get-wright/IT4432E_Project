@@ -22,4 +22,4 @@ class Embedder:
         if face_tensor.dim() == 3:
             face_tensor = face_tensor.unsqueeze(0)
         face_tensor = face_tensor.to(self.device)
-        return self.model(face_tensor).squeeze(0).cpu()
+        return self.model.embed_normalized(face_tensor).squeeze(0).cpu()
