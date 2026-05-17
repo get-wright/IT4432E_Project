@@ -21,33 +21,46 @@ IMG_EXT = {".jpg", ".jpeg", ".png"}
 log = logging.getLogger("process")
 
 
-def _find_casia_root() -> Path:
-    """Locate the directory that contains identity subfolders.
+def _find_casia_root() -> tuple[Path, str]:
+    """Locate the directory containing CASIA images.
 
-    Kaggle's CASIA-WebFace dump might extract directly to `casia-webface/<id>/...`
-    or nest one level deeper. Pick the first directory with >100 subdirs.
+    Returns (dir, layout) where layout is one of:
+        "nested" — `<dir>/<identity_id>/<file>.jpg`
+        "flat"   — `<dir>/<identity_id>_<num>.jpg`
     """
     base = RAW / "casia-webface"
     candidates = [base, *(p for p in base.iterdir() if p.is_dir())]
     for c in candidates:
         try:
-            ids = [d for d in c.iterdir() if d.is_dir()]
-            if len(ids) > 100:
-                return c
+            entries = list(c.iterdir())
         except Exception:
             continue
+        # Nested: many subdirs of images.
+        subdirs = [d for d in entries if d.is_dir()]
+        if len(subdirs) > 100:
+            return c, "nested"
+        # Flat: many image files with id-prefixed names.
+        files = [f for f in entries if f.is_file() and f.suffix.lower() in IMG_EXT]
+        if len(files) > 1000 and "_" in files[0].stem:
+            return c, "flat"
     raise SystemExit("CASIA-WebFace identity root not found")
 
 
 def build_pairs_casia() -> list[tuple[Path, str]]:
-    casia_root = _find_casia_root()
-    pairs = []
-    for ident_dir in casia_root.iterdir():
-        if not ident_dir.is_dir():
-            continue
-        for img in ident_dir.iterdir():
-            if img.suffix.lower() in IMG_EXT:
-                pairs.append((img, f"casia_{ident_dir.name}"))
+    casia_root, layout = _find_casia_root()
+    pairs: list[tuple[Path, str]] = []
+    if layout == "nested":
+        for ident_dir in casia_root.iterdir():
+            if not ident_dir.is_dir():
+                continue
+            for img in ident_dir.iterdir():
+                if img.suffix.lower() in IMG_EXT:
+                    pairs.append((img, f"casia_{ident_dir.name}"))
+    else:  # flat: identity_<num>.jpg
+        for img in casia_root.iterdir():
+            if img.is_file() and img.suffix.lower() in IMG_EXT and "_" in img.stem:
+                ident = img.stem.rsplit("_", 1)[0]
+                pairs.append((img, f"casia_{ident}"))
     return pairs
 
 
