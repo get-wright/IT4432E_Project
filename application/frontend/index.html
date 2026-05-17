@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Face Recognition</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Face Recognition</h1>
+    <nav>
+      <button data-tab="enroll" class="tab active">Enroll</button>
+      <button data-tab="verify" class="tab">Verify</button>
+      <button data-tab="list" class="tab">Enrolled</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="cam-section">
+      <video id="cam" autoplay playsinline muted></video>
+      <canvas id="snap" hidden></canvas>
+    </section>
+
+    <section id="enroll-section" class="panel">
+      <input id="name" type="text" placeholder="Name" autocomplete="off" />
+      <button id="enroll-btn">Capture &amp; Enroll</button>
+      <div id="enroll-result" class="result"></div>
+    </section>
+
+    <section id="verify-section" class="panel hidden">
+      <button id="verify-btn">Capture &amp; Verify</button>
+      <div id="verify-result" class="result"></div>
+    </section>
+
+    <section id="list-section" class="panel hidden">
+      <button id="refresh-btn">Refresh</button>
+      <ul id="enrolled-list"></ul>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
