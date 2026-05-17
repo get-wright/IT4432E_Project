@@ -80,17 +80,29 @@ def build_pairs_celeba() -> list[tuple[Path, str]]:
 
 
 def build_pairs_lfw() -> list[tuple[Path, str]]:
+    """LFW Kaggle dump may double-nest lfw-deepfunneled/ → walk for the level
+    whose children are identity directories of jpgs."""
     base = RAW / "lfw"
-    deep = next(base.rglob("lfw-deepfunneled"), None) or next(base.rglob("lfw_funneled"), None)
-    if deep is None:
-        raise SystemExit("LFW image root not found")
-    pairs = []
-    for ident_dir in deep.iterdir():
-        if ident_dir.is_dir():
-            for img in ident_dir.iterdir():
-                if img.suffix.lower() in IMG_EXT:
-                    pairs.append((img, f"lfw_{ident_dir.name}"))
-    return pairs
+    # Find any directory whose children are dirs whose children include jpgs.
+    for candidate in base.rglob("*"):
+        if not candidate.is_dir():
+            continue
+        try:
+            subdirs = [d for d in candidate.iterdir() if d.is_dir()]
+        except Exception:
+            continue
+        if len(subdirs) < 100:
+            continue
+        # Sniff: does the first subdir contain at least one jpg?
+        for d in subdirs[:5]:
+            if any(f.suffix.lower() in IMG_EXT for f in d.iterdir()):
+                pairs = []
+                for ident_dir in subdirs:
+                    for img in ident_dir.iterdir():
+                        if img.suffix.lower() in IMG_EXT:
+                            pairs.append((img, f"lfw_{ident_dir.name}"))
+                return pairs
+    raise SystemExit("LFW identity-folder root not found")
 
 
 def align_batch(mtcnn: MTCNN, src_paths: list[Path], out_paths: list[Path]) -> list[bool]:
