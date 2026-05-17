@@ -8,6 +8,7 @@ VM_NAME="${VM_NAME:-siamese-train}"
 BUCKET="${BUCKET:-${PROJECT}-siamese}"
 MACHINE_TYPE="${MACHINE_TYPE:-a2-highgpu-1g}"
 ACCEL="${ACCEL:-type=nvidia-tesla-a100,count=1}"
+IMAGE_FAMILY="${IMAGE_FAMILY:-pytorch-2-9-cu129-ubuntu-2204-nvidia-580}"
 
 gcloud config set project "$PROJECT"
 
@@ -29,7 +30,7 @@ else
     --zone="$ZONE" \
     --machine-type="$MACHINE_TYPE" \
     --accelerator="$ACCEL" \
-    --image-family=common-cu124 \
+    --image-family="$IMAGE_FAMILY" \
     --image-project=deeplearning-platform-release \
     --boot-disk-size=200GB \
     --boot-disk-type=pd-ssd \
