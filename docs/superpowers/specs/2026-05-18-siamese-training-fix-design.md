@@ -59,14 +59,14 @@ Inference / eval:
   cosine_sim(a, b) = a · b
 ```
 
-**Why L2-normalize inside the loss (not at the model output):** Training on un-normalized embeddings lets the model satisfy `softplus(d_ap - d_an)` by scaling overall embedding norms, not by improving angular identity structure. At eval we normalize and that fake "progress" disappears. FaceNet normalizes inside the loss for exactly this reason. We keep the model's `forward` un-normalized so `embed_normalized()` stays explicit and the classifier head in Phase 1 sees raw vectors (better with CE), but the triplet loss in Phase 2 explicitly normalizes its input on entry.
+**Why L2-normalize inside the loss (not at the model output):** Training on un-normalized embeddings lets the model satisfy `softplus(d_ap - d_an)` by scaling overall embedding norms, not by improving angular identity structure. At eval we normalize and that fake "progress" disappears. FaceNet (Schroff 2015) computes its triplet loss on L2-normalized embeddings for exactly this reason. We keep the model's `forward` un-normalized so `embed_normalized()` stays explicit and the Phase 1 classifier head sees raw vectors (better with CE); the Phase 2 triplet loss explicitly L2-normalizes its input on entry.
 
 ## Components
 
 ### `training_pipeline/src/model.py`
 
 - `FaceEmbedding.forward(x)` returns **un-normalized** 512-d vector. (Previously normalized.)
-- New `FaceEmbedding.embed_normalized(x)`: forward + L2-normalize. Used by eval, by app inference, and inside the triplet loss when computing pairwise *cosine* distances for selection if we want angle-space mining; current plan uses Euclidean distance on un-normalized vectors.
+- New `FaceEmbedding.embed_normalized(x)`: forward + L2-normalize. Used by eval and by app inference. The triplet loss in Phase 2 also internally L2-normalizes its input (Euclidean distance on **unit-normalized** vectors). Phase 1's classifier head sees raw forward output — CE benefits from un-normalized logits.
 - New module `ClassifierHead(nn.Module)`:
   - Single `nn.Linear(embedding_dim, n_identities)`, no bias.
   - Used only during Phase 1; instantiated separately from `FaceEmbedding` so it can be cleanly dropped at handoff.
@@ -100,16 +100,19 @@ Inference / eval:
 Rewrite into two sequential phase loops driven by config:
 
 - `cfg.train.phase1_epochs = 3`, `cfg.train.phase2_epochs = 17`, `cfg.train.batches_per_epoch = 1500`.
+- `cfg.train.phase1_batch_size = 128` (used by Phase 1 RandomSampler with replacement to force exact `batches_per_epoch` length per epoch).
+- `cfg.train.p = 32`, `cfg.train.k = 4` (PKSampler for Phase 2; batch size = P×K = 128).
 - `cfg.train.lr_backbone = 1.0e-4`, `cfg.train.lr_head = 5.0e-4`, `cfg.train.weight_decay = 5.0e-4`.
 - `cfg.train.margin = 0.3` (used by semi-hard selection band, not by the loss hinge).
 
 Phase 1 loop:
 1. Build `FaceEmbedding` + `ClassifierHead(512, n_identities)` (n derived from training manifest).
-2. AdamW over both with split learning rates.
-3. Per batch: forward → classifier logits → CE → backward → step.
-4. End of epoch: run LFW probe (full 6000 pairs, fallback to raw on MTCNN miss) **with `strict=False`** — no assertions, just metrics for logging. Append `{spread, accuracy, pos_mean, neg_mean}` to `history.json`.
-5. **After all phase-1 epochs are done**, evaluate the spread once. If `spread > 0.05` → handoff to phase 2. If not → abort with `RuntimeError("phase 1 produced collapsed embeddings — fix data/env before continuing")`. Early epochs are allowed to be weak; the gate fires only once at the boundary.
-6. Save `checkpoints/phase1_end.pt`.
+2. DataLoader: `RandomSampler(dataset, replacement=True, num_samples=cfg.train.batches_per_epoch * cfg.train.phase1_batch_size)`, `batch_size=cfg.train.phase1_batch_size` (default 128). This makes "epoch" exactly `batches_per_epoch` batches regardless of dataset size, so LR schedule + warmup + phase-1 gate are deterministic.
+3. AdamW over both `FaceEmbedding` and `ClassifierHead` with split learning rates.
+4. Per batch: forward → classifier logits → CE → backward → step.
+5. End of epoch: run LFW probe (full 6000 pairs, fallback to raw on MTCNN miss) **with `strict=False`** — no assertions, just metrics for logging. Append `{spread, accuracy, pos_mean, neg_mean}` to `history.json`.
+6. **After all phase-1 epochs are done**, evaluate the spread once. If `spread > 0.05` → handoff to phase 2. If not → abort with `RuntimeError("phase 1 produced collapsed embeddings — fix data/env before continuing")`. Early epochs are allowed to be weak; the gate fires only once at the boundary.
+7. Save `checkpoints/phase1_end.pt`.
 
 Phase 2 loop:
 1. Drop classifier head (delete reference, free parameters from optimizer).
@@ -137,31 +140,44 @@ class LfwPair:
 
 The evaluator constructs aligned + raw paths from these fields plus two explicit roots (`aligned_root`, `raw_root`) passed by the caller. No filtering on disk presence at load time — all 6000 pairs are returned.
 
-**Aligned and raw roots:**
-- `aligned_root = ROOT / "process-data/lfw_pairs"` — populated by `process.py`.
-- `raw_root = ROOT / "preprocess-data/lfw/lfw-deepfunneled"` — the raw Kaggle dump, always on disk.
+**Aligned and raw roots:** discovered, not hardcoded.
 
-For each `LfwPair`, path construction is `<root>/<name>/<name>_<idx:04d>.jpg` for both roots. `_load_image_with_fallback(aligned, raw)`:
+- `aligned_root` defaults to `ROOT / "process-data/lfw_pairs"` (populated by `process.py`) but is exposed as a CLI flag `--aligned-root` and as a parameter to `evaluate_lfw`.
+- `raw_root` defaults are discovered by reusing the existing helper logic in `process-data/process.py::build_pairs_lfw`, which already walks the Kaggle dump to find the identity-folder level — it handles `lfw-deepfunneled/`, `lfw_funneled/`, and double-nested layouts. Refactor that discovery into `process-data/lfw_layout.py::find_lfw_identity_root(raw_dir)`, import it in both `process.py` (preserving existing behaviour) and `eval_lfw.py`. CLI flag `--raw-root` overrides.
+
+For each `LfwPair`, path construction is `<root>/<name>/<name>_<idx:04d>.jpg` for both aligned and raw roots. `_load_image_with_fallback(aligned, raw)`:
 - If `aligned.exists()` → load aligned, apply `eval_transform`.
 - Else → load raw, center-crop to `0.8 * min(w, h)` square, resize 160×160, apply `eval_transform`.
 - Asserts `raw.exists()` — if even raw is missing, that's a setup bug, not a runtime path. Raise.
 
-**Sanity assertions parameterized by `strict`:**
+**Sanity assertions split into two layers:**
 
 ```python
+def _assert_distribution_sane(metrics):
+    assert metrics['spread'] > 0.05, f"COLLAPSED: pos={metrics['pos_sim_mean']:.3f}, neg={metrics['neg_sim_mean']:.3f}"
+    assert metrics['pos_sim_std'] > 0.01, f"COLLAPSED: pos std={metrics['pos_sim_std']:.4f} too tight"
+    assert 0.4 < metrics['pos_ratio'] < 0.6, f"LABEL LEAK: {metrics['pos_ratio']:.2%} positive"
+
+
+def _assert_threshold_sane(metrics):
+    # Only applies when a threshold was selected via sweep (i.e. LFW 10-fold CV).
+    # Cosine threshold should be solidly positive for a working face model. Range
+    # matches the project goal: 0.0 < t < 0.9.
+    assert 0.0 < metrics['threshold_global'] < 0.9, f"THRESHOLD AT BOUND: {metrics['threshold_global']}"
+
+
 def evaluate_lfw(model, pairs, ..., strict: bool = True) -> dict:
     ...
     metrics = {...}  # always computed
     if strict:
-        assert metrics['spread'] > 0.05, f"COLLAPSED: pos={pos.mean():.3f}, neg={neg.mean():.3f}"
-        assert metrics['pos_sim_std'] > 0.01, f"COLLAPSED: pos std={pos.std():.4f} too tight"
-        assert 0.4 < metrics['pos_ratio'] < 0.6, f"LABEL LEAK: {metrics['pos_ratio']:.2%} positive"
-        assert -0.5 < metrics['threshold_global'] < 0.95, f"THRESHOLD AT BOUND: {metrics['threshold_global']}"
+        _assert_distribution_sane(metrics)
+        _assert_threshold_sane(metrics)
     return metrics
 ```
 
 - Training loop calls with `strict=False` — returns metrics dict including `spread`. Training itself decides whether to abort.
 - Final CLI run (`python -m evaluation.eval_lfw`) calls with `strict=True`. Any failure → `RuntimeError`, no `results.json` written.
+- `eval_pins.py` reuses only `_assert_distribution_sane` (no threshold sweep, no threshold check). See below.
 
 ### `evaluation/eval_lfw.py` (CLI)
 
@@ -179,7 +195,7 @@ Output `evaluation/results_pins.json` includes:
 - `pos_sim_mean`, `neg_sim_mean`, `spread` (for inspection)
 - For reference / curiosity only: `accuracy_at_pins_tuned_threshold` and `pins_tuned_threshold` — clearly labeled as not the headline.
 
-Same `strict=True` sanity assertions apply (no label-leak, spread > 0.05).
+Applies only `_assert_distribution_sane` (spread, std, label balance). **Does not** call `_assert_threshold_sane` — Pins doesn't sweep a threshold of its own, so a threshold-bound check is meaningless here.
 
 ### Notebooks
 
@@ -234,8 +250,8 @@ None — research already confirmed every choice. Hyperparameter ranges (lr, mar
 
 ## References
 
-- Schroff et al. 2015 — FaceNet (semi-hard triplet, softmax warmup).
-- Hermans et al. 2017 — In Defense of the Triplet Loss for Person Re-Identification (batch-all + soft-margin; their batch-hard variant is where we got the collapse trap from).
-- Wang et al. 2019 — MassFace (CASIA-only softmax-warmup + semi-hard, 98.3% LFW).
-- Olivier Moindrot's blog — Triplet Loss and Online Triplet Mining in TensorFlow (collapse warning + semi-hard pseudocode).
-- Random Erasing Data Augmentation (Zhong et al. 2017) — context for why we drop it from face-crop training.
+- Schroff et al. 2015 — FaceNet. Source of: semi-hard negative mining; L2-normalize embeddings during triplet training.
+- Hermans et al. 2017 — In Defense of the Triplet Loss for Person Re-Identification. Source of: soft-margin variant `softplus(d_ap - d_an)`. Their batch-hard variant is where we got the collapse trap from when used cold.
+- Wang et al. 2019 — MassFace. Source of: classification-softmax warmup → triplet handoff recipe; CASIA-only training to 98.3% LFW.
+- Olivier Moindrot's blog — Triplet Loss and Online Triplet Mining in TensorFlow. Source of: explicit collapse warning + semi-hard mining pseudocode.
+- Zhong et al. 2017 — Random Erasing Data Augmentation. Context for why we drop it from 160×160 face-crop training (erases identity regions).
