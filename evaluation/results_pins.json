@@ -1,0 +1,16 @@
+{
+  "dataset": "pins-face-recognition (105 celebs, disjoint from CASIA + LFW)",
+  "n_pairs": 3000,
+  "n_pos": 1500,
+  "n_neg": 1500,
+  "pos_sim_mean": 0.6653267112618002,
+  "pos_sim_std": 0.18988281963029519,
+  "neg_sim_mean": 0.28934818247923005,
+  "neg_sim_std": 0.2651275340562498,
+  "spread": 0.37597852878257015,
+  "pos_ratio": 0.5,
+  "lfw_threshold_used": 0.565,
+  "accuracy_at_lfw_threshold": 0.777,
+  "accuracy_at_pins_tuned_threshold": 0.789,
+  "pins_tuned_threshold": 0.4750000000000001
+}

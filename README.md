@@ -4,6 +4,18 @@ Course project for IT4432E (HUST). Trains a face embedding network with a two-ph
 
 Pipeline: CASIA-WebFace → MTCNN alignment → ResNet50 + 512-d embedding head trained with a two-phase recipe (softmax warmup → semi-hard triplet) → LFW 10-fold verification benchmark → FastAPI app with SQLite-backed enrollment store.
 
+**Results**
+
+| Benchmark | Metric | Value |
+|---|---|---|
+| LFW (10-fold CV, 6000 pairs, strict) | `mean_acc ± std` | **90.90% ± 1.09%** |
+| LFW | `pos_sim − neg_sim` (spread) | 0.585 |
+| LFW | threshold (cosine sim) | 0.565 |
+| Pins (105 celebs, disjoint from CASIA + LFW) | accuracy at fixed LFW threshold | **77.7%** |
+| Pins | spread | 0.376 |
+
+Pins identities are disjoint from both the training data (CASIA) and the eval set (LFW), so this number is a real cross-dataset check — not a re-tuned threshold. Full numbers in `evaluation/results.json` and `evaluation/results_pins.json`.
+
 For a deeper walk-through of why the training is structured this way — including the bug it replaced — see [`docs/training-overview.md`](docs/training-overview.md).
 
 ## Layout
