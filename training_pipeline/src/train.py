@@ -113,7 +113,7 @@ def run_training(cfg: dict) -> dict:
     p1_warmup = cfg["train"]["warmup_steps"]
     step = 0
 
-    scaler = torch.amp.GradScaler("cuda", enabled=(device == "cuda"))
+    scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
 
     for epoch in range(1, phase1_epochs + 1):
         model.train(); classifier.train()
