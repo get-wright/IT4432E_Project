@@ -81,6 +81,8 @@ def main() -> None:
     ap.add_argument("--lfw-results", default=ROOT / "evaluation/results.json")
     ap.add_argument("--out", default=ROOT / "evaluation/results_pins.json")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--tta", action="store_true",
+                    help="Use flip-averaged TTA at embed time")
     args = ap.parse_args()
 
     lfw = json.loads(Path(args.lfw_results).read_text())
@@ -101,10 +103,11 @@ def main() -> None:
     dl = DataLoader(ds, batch_size=64, num_workers=0)  # MTCNN doesn't play well with workers.
 
     embs: list[torch.Tensor] = []
+    embed_fn = model.embed_tta if args.tta else model.embed_normalized
     for x in dl:
         x = x.to(args.device, non_blocking=True)
         with torch.no_grad():
-            embs.append(model.embed_normalized(x).cpu())
+            embs.append(embed_fn(x).cpu())
     embs_t = torch.cat(embs, dim=0)
     path_to_idx = {p: i for i, p in enumerate(unique)}
 

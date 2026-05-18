@@ -29,6 +29,8 @@ def main() -> None:
                     help="Override raw LFW root; default = auto-discover under preprocess-data/lfw")
     ap.add_argument("--out", default=ROOT / "evaluation/results.json")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--tta", action="store_true",
+                    help="Use flip-averaged TTA at embed time")
     args = ap.parse_args()
 
     raw_root = Path(args.raw_root) if args.raw_root else find_lfw_identity_root(ROOT / "preprocess-data/lfw")
@@ -45,6 +47,7 @@ def main() -> None:
         raw_root=raw_root,
         device=args.device,
         strict=True,
+        use_tta=args.tta,
     )
 
     Path(args.out).write_text(json.dumps(metrics, indent=2) + "\n")
