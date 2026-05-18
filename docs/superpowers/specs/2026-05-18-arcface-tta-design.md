@@ -36,7 +36,7 @@ This is a loss-and-inference change, not a methodology change. Untouched:
 
 App selects model via `APP_CKPT` env var (already supported in `application/backend/main.py:_config`). To use new model: `APP_CKPT=training_pipeline/checkpoints/best_arcface.pt uvicorn application.backend.main:app`.
 
-**Enrollment compatibility:** Enabling TTA changes embedding values for the same input (it's the L2-normalized sum of a face and its flip, not the face alone). Vectors enrolled with old `embed_normalized` will not match `embed_tta` vectors. When switching to the ArcFace model with TTA on, the app must clear or re-enroll existing entries. Implementation: when the embedder loads, write the model SHA + tta-on flag to a sidecar `meta.json` next to `embeddings.npy`. On startup, if the meta differs from the current model+TTA combo, refuse to load and instruct the user to re-enroll. This avoids silent score drift.
+**Enrollment compatibility:** Enabling TTA changes embedding values for the same input (it's the L2-normalized sum of a face and its flip, not the face alone). Vectors enrolled with old `embed_normalized` will not match `embed_tta` vectors. When switching to the ArcFace model with TTA on, the app must clear or re-enroll existing entries. Implementation: when the embedder loads, write the model SHA + tta-on flag to a sidecar `meta.json` next to `vectors.npy` (the actual store file in `application/backend/db.py:19`, NOT `embeddings.npy`). On startup, if the meta differs from the current model+TTA combo, refuse to load `vectors.npy` and instruct the user to re-enroll. This avoids silent score drift.
 
 ### ArcFace head — `training_pipeline/src/arcface_head.py` (~60 LOC, new file)
 
@@ -58,7 +58,7 @@ class ArcFaceHead(nn.Module):
         self.m = m
         self.cos_m = math.cos(m)
         self.sin_m = math.sin(m)
-        self.threshold = math.cos(math.pi - m)  # easy-margin guard
+        self.threshold = math.cos(math.pi - m)  # wrong-hemisphere boundary
         self.weight = nn.Parameter(torch.empty(num_classes, embedding_dim))
         nn.init.xavier_normal_(self.weight)
 
@@ -146,9 +146,13 @@ print(f"P2 e{epoch}: center_norm mean={center_norms.mean():.3f} "
 
 Sanity range for center norms is roughly [0.5, 2.0]. Outside that range signals head degeneracy (centers all collapsing to one direction, or weight blow-up).
 
-At end of training: save `{"model": model.state_dict(), "cfg": cfg}` to `<checkpoints_dir>/<checkpoint_name>` (this matches the existing format that `eval_lfw.py` and `application/backend/inference.py` already expect). Save `arc_head.state_dict()` to `arcface_head.pt` for analysis only — the app never loads it.
+**Checkpoint save points** (preserve existing two-file convention):
 
-**Required train.py fix:** Currently `train.py:233` hardcodes `"best.pt"` as the save filename. Replace with `cfg.get("checkpoint_name", "best.pt")` so the new YAML's `checkpoint_name: best_arcface.pt` actually takes effect. The same logic must guard the path: `ckpt_dir / cfg.get("checkpoint_name", "best.pt")`.
+1. **Best, guarded** (`train.py:231-233`): only inside `if metrics["mean_acc"] > best_acc and metrics["spread"] > 0.05:`. This is the file the app loads. Format unchanged: `{"model": model.state_dict(), "cfg": cfg}`.
+2. **Last, unguarded** (`train.py:235`): always written at end of training to `ckpt_dir / "last.pt"`. Same format. This file stays exactly as today — analysis-only, never promoted.
+3. **ArcFace head** (new): once at end of training, write `arc_head.state_dict()` to `ckpt_dir / "arcface_head.pt"` (analysis only).
+
+**Required train.py fix:** `train.py:233` hardcodes `"best.pt"` as the *guarded best-save* filename. Replace **only that line** with `ckpt_dir / cfg.get("checkpoint_name", "best.pt")`. Do **not** touch line 235 (`last.pt` keeps its literal name — it's a separate "last epoch" snapshot for analysis, not a competing best). With `checkpoint_name: best_arcface.pt` in the new YAML, the guarded best-save writes to `best_arcface.pt`; the always-at-end `last.pt` still gets written and never overwrites best.
 
 ### TTA — wired at every embedding choke point
 
@@ -236,11 +240,11 @@ Mirrors existing `training_pipeline/tests/test_two_phase_smoketest.py`. Construc
 - Same trainer entry point with new `train_arcface.yaml`-style overrides
 
 Assertions:
-- No NaN losses across all P1+P2 batches
-- ArcFace logits stay within `[-s, s]` (s=64 is the bound; we do **not** assert it's reached)
-- Center norms stay in `[0.3, 3.0]` for every P2 epoch (wide sanity window, tight enough to catch blow-ups)
-- Final embedding spread on a held-out batch > 0.05 (matches the production collapse-gate threshold)
-- `best_arcface.pt` is written under the checkpoints dir (file exists, loadable via `torch.load`, has both `model` and `cfg` keys)
+- All losses are finite (no NaN/inf) across every P1+P2 batch.
+- ArcFace logits are finite. Upper bound is `s` (cosine ≤ 1). Lower bound is `−(1 + mm) · s` where `mm = sin(π − m) · m ≈ 0.240` for m=0.5 — fallback branch can push `cos_θ − mm` to `−1.240`, scaled to `−s·1.240 ≈ −79.4`. Assert `logits.min() >= -(1.0 + mm) * s - 1e-3` (small slack for fp16/fp32 noise). Do **not** assert tight `[-s, s]`; that bound is wrong for the standard non-easy fallback.
+- Center norms stay in `[0.3, 3.0]` for every P2 epoch (wide sanity window, tight enough to catch blow-ups).
+- Final embedding spread on a held-out batch > 0.05 (matches the production collapse-gate threshold).
+- `best_arcface.pt` is written under the checkpoints dir (file exists, loadable via `torch.load`, has both `model` and `cfg` keys).
 
 Runs in <2 minutes on CPU. Gates the change in CI.
 
@@ -297,7 +301,7 @@ If all four hold: promote `best_arcface.pt` to `application/models/best.pt`, upd
 1. **ArcFace late-epoch collapse.** Literature warns "70% LFW, 5% validation" failure mode when margins too high / LR not decayed. *Mitigation:* CE warmup (3 epochs) + SGD step decay at epochs 20, 27 + collapse gate + center-norm logging.
 2. **AdamW→SGD optimizer switch can hit different local minima.** *Mitigation:* SGD only in P2; P1 stays AdamW so warmup remains stable.
 3. **TTA cost at inference.** 2× forward pass. *Mitigation:* still <50ms on M4 for a single face; acceptable for app latency.
-4. **Easy-margin guard interaction with cosine clamp.** Margin only applied when `cos_θ > cos(π-m) ≈ -0.878`. If embeddings cluster wrongly early (cos_θ < -0.878), the head behaves as pure cosine, gradient still flows. *Mitigation:* xavier_normal_ init keeps centers well-spread initially.
+4. **Wrong-hemisphere fallback interaction with cosine clamp.** Standard `cos(θ+m)` formula is only applied when `cos_θ > cos(π−m) ≈ −0.878`. Otherwise the head returns `cos_θ − mm` (where `mm = sin(π−m)·m ≈ 0.240`), keeping the gradient on the same side of the boundary. *Mitigation:* xavier_normal_ init keeps centers well-spread initially; CE warmup ensures embeddings are already clustered into the correct hemisphere before P2 starts.
 
 ## File changeset
 
@@ -316,6 +320,8 @@ If all four hold: promote `best_arcface.pt` to `application/models/best.pt`, upd
 - `application/backend/inference.py` — add `use_tta` ctor arg to `Embedder`, branch in `embed()`
 - `application/backend/main.py` — read `APP_TTA` env var in `_config()`, pass `use_tta` to `Embedder`; add embedding-store version guard (model SHA + tta flag) that refuses to load a mismatched enrollment DB
 - `evaluation/benchmarks.ipynb` — add "Triplet vs ArcFace" comparison section
+- `application/Dockerfile` — fix stale `ENV APP_THRESHOLD=0.5` (line 16) to `0.565` to match the new backend/UI default; without this, containerized runs silently regress to the old threshold and skew any ArcFace deployment evaluation
+- `application/frontend/app.js` — guard `snapBase64()` against zero-dimension video (camera denied or `loadedmetadata` not fired): if `video.videoWidth === 0 || video.videoHeight === 0`, throw a clear error (`"Camera not ready — grant permission or wait for stream"`) and surface it in the result UI instead of POSTing an empty frame to `/enroll` or `/verify`
 
 **Result files (generated, gitignored or committed depending on size):**
 - `evaluation/results_arcface.json`
