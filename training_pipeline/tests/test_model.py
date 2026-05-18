@@ -57,3 +57,23 @@ def test_classifier_head_shapes():
 def test_classifier_head_has_no_bias():
     head = ClassifierHead(embedding_dim=64, n_identities=10)
     assert head.fc.bias is None
+
+
+def test_embed_tta_unit_norm_and_flip_consistency():
+    """embed_tta returns unit-norm and is permutation-invariant to flipping the input."""
+    import torch
+    import torch.nn.functional as F
+    from training_pipeline.src.model import FaceEmbedding
+
+    torch.manual_seed(0)
+    model = FaceEmbedding(embedding_dim=32, pretrained=False).eval()
+    x = torch.randn(2, 3, 160, 160)
+
+    with torch.no_grad():
+        e = model.embed_tta(x)
+        e_flipped = model.embed_tta(torch.flip(x, dims=[-1]))
+
+    # Unit norm
+    assert torch.allclose(e.norm(dim=1), torch.ones(2), atol=1e-5)
+    # Flip-invariant: TTA averages x and flip(x), so embedding of flip(x) is the same set.
+    assert torch.allclose(e, e_flipped, atol=1e-5)

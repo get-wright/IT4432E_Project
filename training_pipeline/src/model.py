@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import resnet50, ResNet50_Weights
@@ -23,6 +24,16 @@ class FaceEmbedding(nn.Module):
 
     def embed_normalized(self, x):
         return F.normalize(self.forward(x), p=2, dim=1)
+
+    def embed_tta(self, x):
+        """L2-normalized average of embeddings from x and its horizontal flip.
+
+        2x forward at inference; helps on profile/pose benchmarks by reducing
+        left/right asymmetry. No retraining needed.
+        """
+        e1 = self.embed_normalized(x)
+        e2 = self.embed_normalized(torch.flip(x, dims=[-1]))
+        return F.normalize(e1 + e2, p=2, dim=1)
 
 
 class ClassifierHead(nn.Module):
