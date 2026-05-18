@@ -1,8 +1,10 @@
 # Face Recognition with Siamese Network
 
-Course project for IT4432E (HUST). Trains a face embedding network with triplet loss, evaluates it on LFW, and serves it through a small web app that does enrollment and verification from the browser webcam.
+Course project for IT4432E (HUST). Trains a face embedding network with a two-phase recipe (softmax warmup → semi-hard triplet), evaluates it on LFW, and serves it through a small web app that does enrollment and verification from the browser webcam.
 
 Pipeline: CASIA-WebFace → MTCNN alignment → ResNet50 + 512-d embedding head trained with a two-phase recipe (softmax warmup → semi-hard triplet) → LFW 10-fold verification benchmark → FastAPI app with SQLite-backed enrollment store.
+
+For a deeper walk-through of why the training is structured this way — including the bug it replaced — see [`docs/training-overview.md`](docs/training-overview.md).
 
 ## Layout
 
