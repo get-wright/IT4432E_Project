@@ -17,7 +17,7 @@ This is a loss-and-inference change, not a methodology change. Untouched:
 - PKSampler P=32 × K=4 = 128 batch
 - Collapse gate (`spread > 0.05` on held-out batch)
 - best.pt promotion guard (`acc > best_acc AND spread > 0.05`)
-- AMP + `torch.cuda.amp.GradScaler` (facenet-pytorch torch 2.2 pin)
+- AMP unchanged (existing GradScaler API in `train.py`)
 - L2-norm inside loss (model exposes `embed_normalized`)
 - MTCNN + raw fallback for eval
 - Strict 10-fold LFW protocol (`pos_ratio = 0.500`)
@@ -34,7 +34,9 @@ This is a loss-and-inference change, not a methodology change. Untouched:
 - `training_pipeline/checkpoints/arcface_head.pt` — head weights (saved for analysis only, never loaded by app)
 - `evaluation/results_arcface.json`, `results_pins_arcface.json`, `results_insightface_bench_arcface.json`
 
-App selects model via `APP_MODEL_PATH` env var (default `application/models/best.pt`). To use new model: `APP_MODEL_PATH=training_pipeline/checkpoints/best_arcface.pt`.
+App selects model via `APP_CKPT` env var (already supported in `application/backend/main.py:_config`). To use new model: `APP_CKPT=training_pipeline/checkpoints/best_arcface.pt uvicorn application.backend.main:app`.
+
+**Enrollment compatibility:** Enabling TTA changes embedding values for the same input (it's the L2-normalized sum of a face and its flip, not the face alone). Vectors enrolled with old `embed_normalized` will not match `embed_tta` vectors. When switching to the ArcFace model with TTA on, the app must clear or re-enroll existing entries. Implementation: when the embedder loads, write the model SHA + tta-on flag to a sidecar `meta.json` next to `embeddings.npy`. On startup, if the meta differs from the current model+TTA combo, refuse to load and instruct the user to re-enroll. This avoids silent score drift.
 
 ### ArcFace head — `training_pipeline/src/arcface_head.py` (~60 LOC, new file)
 
@@ -71,9 +73,15 @@ class ArcFaceHead(nn.Module):
         sin_theta_y = torch.sqrt(1.0 - cos_theta.pow(2))
         cos_theta_m = cos_theta * self.cos_m - sin_theta_y * self.sin_m
 
-        # Easy-margin guard: only apply margin where cos_θ > threshold,
-        # else fall back to cos_θ (prevents margin pushing into wrong hemisphere).
-        cos_theta_m = torch.where(cos_theta > self.threshold, cos_theta_m, cos_theta)
+        # Standard ArcFace fallback (NOT easy-margin):
+        # when cos_θ ≤ cos(π−m), use cos_θ − sin(π−m)·m instead of cos(θ+m).
+        # This keeps the margin direction stable in the wrong-hemisphere region.
+        mm = math.sin(math.pi - self.m) * self.m
+        cos_theta_m = torch.where(
+            cos_theta > self.threshold,
+            cos_theta_m,
+            cos_theta - mm,
+        )
 
         # Inject margin only on the correct class
         one_hot = F.one_hot(labels, num_classes=self.weight.size(0)).float()
@@ -86,7 +94,7 @@ class ArcFaceHead(nn.Module):
         return self.weight.norm(dim=1)
 ```
 
-Math is standard InsightFace ArcFace. The `easy-margin` guard handles negative cosines (which can arise early in training before embeddings cluster) — without it the loss can NaN.
+Math is standard InsightFace ArcFace (non-easy-margin variant from the paper). The wrong-hemisphere fallback (`cos_θ − mm` when `cos_θ ≤ cos(π−m)`) handles negative cosines that arise early in training, before embeddings cluster — without it the gradient direction flips and loss can NaN.
 
 ### Training loop — `training_pipeline/src/train.py` changes
 
@@ -138,10 +146,13 @@ print(f"P2 e{epoch}: center_norm mean={center_norms.mean():.3f} "
 
 Sanity range for center norms is roughly [0.5, 2.0]. Outside that range signals head degeneracy (centers all collapsing to one direction, or weight blow-up).
 
-At end of training: save `model.state_dict()` to `best_arcface.pt`, save `arc_head.state_dict()` to `arcface_head.pt`. The app loads only the model state dict.
+At end of training: save `{"model": model.state_dict(), "cfg": cfg}` to `<checkpoints_dir>/<checkpoint_name>` (this matches the existing format that `eval_lfw.py` and `application/backend/inference.py` already expect). Save `arc_head.state_dict()` to `arcface_head.pt` for analysis only — the app never loads it.
 
-### TTA — `training_pipeline/src/model.py` adds method
+**Required train.py fix:** Currently `train.py:233` hardcodes `"best.pt"` as the save filename. Replace with `cfg.get("checkpoint_name", "best.pt")` so the new YAML's `checkpoint_name: best_arcface.pt` actually takes effect. The same logic must guard the path: `ckpt_dir / cfg.get("checkpoint_name", "best.pt")`.
 
+### TTA — wired at every embedding choke point
+
+**Method on the model** (`training_pipeline/src/model.py`):
 ```python
 def embed_tta(self, x: torch.Tensor) -> torch.Tensor:
     """Average of normalized embeddings from x and its horizontal flip.
@@ -154,9 +165,25 @@ def embed_tta(self, x: torch.Tensor) -> torch.Tensor:
     return F.normalize(e1 + e2, dim=-1)
 ```
 
-Eval scripts gain a `--tta` CLI flag (default False for back-compat). When set, embed function used is `embed_tta` instead of `embed_normalized`. Affects all 3 evaluators (`eval_lfw.py`, `eval_pins.py`, `benchmark_insightface.py`).
+**Shared evaluator** (`training_pipeline/src/eval_lfw.py:evaluate_lfw`) currently hardcodes `model.embed_normalized(x)` at line 164. Add `use_tta: bool = False` parameter; inside the loop, branch:
+```python
+embed_fn = model.embed_tta if use_tta else model.embed_normalized
+embs_list.append(embed_fn(x).cpu())
+```
 
-App backend (`application/backend/main.py`) calls `embed_tta` unconditionally — TTA is on by default in deployment.
+**Eval CLIs** (`evaluation/eval_lfw.py`, `eval_pins.py`, new `evaluation/benchmark_insightface.py`) gain `--tta` (default False for back-compat with existing baselines). The flag is forwarded to `evaluate_lfw(..., use_tta=args.tta)` and the Pins/benchmark equivalents.
+
+**App embedder** (`application/backend/inference.py:Embedder`) gains a `use_tta: bool = False` constructor arg, stored as `self.use_tta`. `embed()` switches:
+```python
+embed_fn = self.model.embed_tta if self.use_tta else self.model.embed_normalized
+return embed_fn(face_tensor).squeeze(0).cpu()
+```
+
+App wires TTA from a new env var. Add to `_config()` in `application/backend/main.py`:
+```python
+"use_tta": os.environ.get("APP_TTA", "0") == "1",
+```
+And pass it: `Embedder(cfg["checkpoint"], device="cpu", use_tta=cfg["use_tta"])`. Default off (back-compat); deployment with ArcFace sets `APP_TTA=1`.
 
 ### Config — `training_pipeline/configs/train_arcface.yaml` (new file)
 
@@ -199,29 +226,54 @@ eval:
 
 Trainer accepts `--config` CLI arg (already supported). Default stays `train.yaml`. ArcFace runs use `--config training_pipeline/configs/train_arcface.yaml`.
 
-### Smoke test — `tests/test_arcface_smoketest.py` (new file)
+### Smoke test — `training_pipeline/tests/test_arcface_smoketest.py` (new file)
 
-Mirrors `tests/test_two_phase_smoketest.py`. Constructs:
+Lives under `training_pipeline/tests/` because `pyproject.toml` testpaths is `["training_pipeline/tests", "application/tests"]` — a top-level `tests/` directory would not be collected by pytest.
+
+Mirrors existing `training_pipeline/tests/test_two_phase_smoketest.py`. Constructs:
 - 8-identity × 8-image synthetic dataset (random tensors with per-class bias for separability)
 - Reduced config: phase1_epochs=2, phase2_epochs=3, batches_per_epoch=10
-- Same trainer entry point
+- Same trainer entry point with new `train_arcface.yaml`-style overrides
 
 Assertions:
-- No NaN losses anywhere
-- ArcFace logits `.max()` ≈ scale (within ±10% of `s=64`)
-- Center norms stay in [0.5, 2.0] for every epoch
-- Final embedding spread on a held-out batch > 0.1
-- `best_arcface.pt` exists after training
+- No NaN losses across all P1+P2 batches
+- ArcFace logits stay within `[-s, s]` (s=64 is the bound; we do **not** assert it's reached)
+- Center norms stay in `[0.3, 3.0]` for every P2 epoch (wide sanity window, tight enough to catch blow-ups)
+- Final embedding spread on a held-out batch > 0.05 (matches the production collapse-gate threshold)
+- `best_arcface.pt` is written under the checkpoints dir (file exists, loadable via `torch.load`, has both `model` and `cfg` keys)
 
 Runs in <2 minutes on CPU. Gates the change in CI.
 
 ## Eval protocol changes
 
+`evaluation/eval_lfw.py` and `eval_pins.py` exist; `evaluation/benchmark_insightface.py` does **not** yet exist in the repo (the 8-suite numbers in `results_insightface_bench.json` were generated by a one-off VM script that was never committed). This spec requires creating it.
+
 After training, run three evaluators against `best_arcface.pt`:
 
-1. **Strict LFW 10-fold:** `python -m evaluation.eval_lfw --ckpt training_pipeline/checkpoints/best_arcface.pt --strict --tta --out evaluation/results_arcface.json`
-2. **Pins cross-dataset:** `python -m evaluation.eval_pins --ckpt ... --tta --out evaluation/results_pins_arcface.json`
-3. **8-suite InsightFace benchmarks:** `python -m evaluation.benchmark_insightface --ckpt ... --tta --out evaluation/results_insightface_bench_arcface.json`
+1. **Strict LFW 10-fold** (strict mode is already always on; flag-less). Use the real `--checkpoint`/`--out` CLI:
+   ```
+   python -m evaluation.eval_lfw \
+       --checkpoint training_pipeline/checkpoints/best_arcface.pt \
+       --tta \
+       --out evaluation/results_arcface.json
+   ```
+2. **Pins cross-dataset** — must point `--lfw-results` to the new file so the threshold comes from the ArcFace model, not the old triplet baseline:
+   ```
+   python -m evaluation.eval_pins \
+       --checkpoint training_pipeline/checkpoints/best_arcface.pt \
+       --tta \
+       --lfw-results evaluation/results_arcface.json \
+       --out evaluation/results_pins_arcface.json
+   ```
+3. **8-suite InsightFace benchmarks** — script is new (see "File changeset"):
+   ```
+   python -m evaluation.benchmark_insightface \
+       --checkpoint training_pipeline/checkpoints/best_arcface.pt \
+       --tta \
+       --out evaluation/results_insightface_bench_arcface.json
+   ```
+
+Existing scripts gain `--tta` (flag, default off — preserves the meaning of the existing `results.json` numbers). `eval_lfw.py` does not need a `--strict` flag because it already passes `strict=True` unconditionally to `evaluate_lfw` (see `evaluation/eval_lfw.py:46`).
 
 Notebook `evaluation/benchmarks.ipynb` adds a new section "Triplet vs ArcFace" that loads both `results_insightface_bench.json` and `results_insightface_bench_arcface.json` and renders a side-by-side comparison: bars per benchmark with two colors per bar group, and a Δ-vs-triplet column.
 
@@ -252,15 +304,17 @@ If all four hold: promote `best_arcface.pt` to `application/models/best.pt`, upd
 **New files:**
 - `training_pipeline/src/arcface_head.py`
 - `training_pipeline/configs/train_arcface.yaml`
-- `tests/test_arcface_smoketest.py`
+- `training_pipeline/tests/test_arcface_smoketest.py` (under existing testpath)
+- `evaluation/benchmark_insightface.py` (does not exist in repo today; produced the 8-suite JSON only on the VM)
 
 **Modified files:**
-- `training_pipeline/src/train.py` — P2 swap to ArcFace + SGD + step decay + center logging
+- `training_pipeline/src/train.py` — (a) P2 swap to ArcFace head + SGD m=0.9 + `MultiStepLR` step decay + per-epoch center-norm logging; (b) replace hardcoded `"best.pt"` at line 233 with `cfg.get("checkpoint_name", "best.pt")` so the new YAML drives the save path
 - `training_pipeline/src/model.py` — add `embed_tta` method
-- `evaluation/eval_lfw.py` — add `--tta` flag
-- `evaluation/eval_pins.py` — add `--tta` flag
-- `evaluation/benchmark_insightface.py` — add `--tta` flag
-- `application/backend/main.py` — use `embed_tta` instead of `embed_normalized`
+- `training_pipeline/src/eval_lfw.py` — add `use_tta` param to `evaluate_lfw`, branch the embedding call at line 164
+- `evaluation/eval_lfw.py` — add `--tta` CLI flag, forward as `use_tta=args.tta`
+- `evaluation/eval_pins.py` — add `--tta` CLI flag, forward through the pins evaluator
+- `application/backend/inference.py` — add `use_tta` ctor arg to `Embedder`, branch in `embed()`
+- `application/backend/main.py` — read `APP_TTA` env var in `_config()`, pass `use_tta` to `Embedder`; add embedding-store version guard (model SHA + tta flag) that refuses to load a mismatched enrollment DB
 - `evaluation/benchmarks.ipynb` — add "Triplet vs ArcFace" comparison section
 
 **Result files (generated, gitignored or committed depending on size):**
