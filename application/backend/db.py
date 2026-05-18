@@ -1,6 +1,7 @@
 """SQLite + .npy enrollment storage with cosine-similarity verify."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 import uuid
@@ -11,12 +12,14 @@ import torch
 
 
 class EnrollmentDB:
-    def __init__(self, root: Path, dim: int) -> None:
+    def __init__(self, root: Path, dim: int, *, embedding_version: str | None = None) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.root / "index.db"
         self.vec_path = self.root / "vectors.npy"
+        self.meta_path = self.root / "meta.json"
         self.dim = dim
+        self.embedding_version = embedding_version  # may be None (back-compat)
         self._init_db()
         self._load_vectors()
 
@@ -36,12 +39,41 @@ class EnrollmentDB:
             arr = np.load(self.vec_path)
             if arr.ndim == 1:
                 arr = arr.reshape(0, self.dim)
+
+            if self.embedding_version is not None:
+                if self.meta_path.exists():
+                    meta = json.loads(self.meta_path.read_text())
+                    if meta.get("embedding_version") != self.embedding_version:
+                        raise RuntimeError(
+                            f"Embedding store version mismatch: stored "
+                            f"{meta.get('embedding_version')!r} but app is "
+                            f"{self.embedding_version!r}. Re-enroll or clear "
+                            f"{self.vec_path} and {self.meta_path}."
+                        )
+                else:
+                    # vectors.npy exists but meta.json doesn't. Only OK if the store is empty —
+                    # otherwise we'd silently accept enrollments from an unknown earlier model.
+                    if arr.shape[0] > 0:
+                        raise RuntimeError(
+                            f"Embedding store at {self.vec_path} has {arr.shape[0]} vectors "
+                            f"but no {self.meta_path.name} to attest their model version. "
+                            f"This is the drift case the version guard exists to prevent. "
+                            f"Re-enroll, or delete {self.vec_path} to start fresh."
+                        )
+                    # Empty store + no meta → safe to backfill the meta.
+                    self.meta_path.write_text(
+                        json.dumps({"embedding_version": self.embedding_version})
+                    )
         else:
             arr = np.zeros((0, self.dim), dtype=np.float32)
+            if self.embedding_version is not None:
+                self.meta_path.write_text(json.dumps({"embedding_version": self.embedding_version}))
         self._vectors = arr
 
     def _save_vectors(self) -> None:
         np.save(self.vec_path, self._vectors)
+        if self.embedding_version is not None and not self.meta_path.exists():
+            self.meta_path.write_text(json.dumps({"embedding_version": self.embedding_version}))
 
     def _compact(self) -> None:
         """Rebuild vectors.npy + row_idx to remove deleted entries."""

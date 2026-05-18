@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 from pathlib import Path
 
@@ -30,7 +31,17 @@ def _config() -> dict:
         "data_dir": Path(os.environ.get("APP_DATA_DIR", ROOT / "application" / "embeddings")),
         "checkpoint": Path(os.environ.get("APP_CKPT", ROOT / "application" / "models" / "best.pt")),
         "threshold": float(os.environ.get("APP_THRESHOLD", "0.565")),
+        "use_tta": os.environ.get("APP_TTA", "0") == "1",
     }
+
+
+def _embedding_version(checkpoint: Path, use_tta: bool) -> str:
+    """Stable identifier for (model weights, TTA flag) combination."""
+    h = hashlib.sha256()
+    with open(checkpoint, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return f"{h.hexdigest()[:16]}-tta{int(use_tta)}"
 
 
 def _reset_for_tests() -> None:
@@ -39,8 +50,9 @@ def _reset_for_tests() -> None:
     cfg = _config()
     _aligner = FaceAligner(device="cpu")
     if cfg["checkpoint"].exists():
-        _embedder = Embedder(cfg["checkpoint"], device="cpu")
-        _db = EnrollmentDB(cfg["data_dir"], dim=_embedder.dim)
+        _embedder = Embedder(cfg["checkpoint"], device="cpu", use_tta=cfg["use_tta"])
+        version = _embedding_version(cfg["checkpoint"], cfg["use_tta"])
+        _db = EnrollmentDB(cfg["data_dir"], dim=_embedder.dim, embedding_version=version)
     else:
         _embedder = None
         _db = None
