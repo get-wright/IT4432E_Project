@@ -29,7 +29,7 @@ def _config() -> dict:
     return {
         "data_dir": Path(os.environ.get("APP_DATA_DIR", ROOT / "application" / "embeddings")),
         "checkpoint": Path(os.environ.get("APP_CKPT", ROOT / "application" / "models" / "best.pt")),
-        "threshold": float(os.environ.get("APP_THRESHOLD", "0.5")),
+        "threshold": float(os.environ.get("APP_THRESHOLD", "0.565")),
     }
 
 

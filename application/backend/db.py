@@ -83,22 +83,27 @@ class EnrollmentDB:
                 )
             ]
 
-    def verify(self, emb: torch.Tensor, threshold: float) -> dict:
+    def verify(self, emb: torch.Tensor, threshold: float, top_k: int = 3) -> dict:
         if self._vectors.shape[0] == 0:
-            return {"matched": False, "best_match": None, "score": 0.0, "threshold": threshold}
+            return {
+                "matched": False, "best_match": None, "score": 0.0,
+                "threshold": threshold, "top_matches": [],
+            }
         q = emb.detach().cpu().numpy().astype(np.float32)
-        sims = self._vectors @ q  # both L2-normalized -> cosine.
+        sims = self._vectors @ q  # both L2-normalized -> cosine
         with sqlite3.connect(self.db_path) as c:
             rows = list(c.execute("SELECT name, row_idx FROM enrolled"))
-        best_score = -1.0
-        best_name: str | None = None
-        for name, idx in rows:
-            s = float(sims[idx])
-            if s > best_score:
-                best_score, best_name = s, name
+        scored = sorted(
+            ({"name": name, "score": float(sims[idx])} for name, idx in rows),
+            key=lambda r: r["score"],
+            reverse=True,
+        )
+        top = scored[:top_k]
+        best = top[0] if top else {"name": None, "score": 0.0}
         return {
-            "matched": best_score >= threshold,
-            "best_match": best_name,
-            "score": best_score,
+            "matched": best["score"] >= threshold,
+            "best_match": best["name"],
+            "score": best["score"],
             "threshold": threshold,
+            "top_matches": top,
         }
