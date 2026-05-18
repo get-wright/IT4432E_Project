@@ -184,14 +184,15 @@ def run_training(cfg: dict) -> dict:
         m=cfg["train"]["arcface_m"],
     ).to(device)
 
+    # Backbone gets weight decay; ArcFace centers don't (decay collapses center norms,
+    # destabilizes the normalized angular distance).
     p2_optim = torch.optim.SGD(
         [
-            {"params": model.parameters()},
-            {"params": arc_head.parameters()},
+            {"params": model.parameters(), "weight_decay": cfg["train"]["weight_decay"]},
+            {"params": arc_head.parameters(), "weight_decay": 0.0},
         ],
         lr=cfg["train"]["p2_lr"],
         momentum=0.9,
-        weight_decay=cfg["train"]["weight_decay"],
         nesterov=False,
     )
 
@@ -200,6 +201,11 @@ def run_training(cfg: dict) -> dict:
         milestones=cfg["train"]["p2_lr_decay_epochs"],
         gamma=cfg["train"]["p2_lr_decay_gamma"],
     )
+
+    # Linear LR warmup over the first P2 epoch — prevents the geometry shock
+    # observed when switching from AdamW/CE warmup to SGD/ArcFace at full LR.
+    p2_warmup_steps = phase2_batches
+    p2_base_lr = cfg["train"]["p2_lr"]
 
     step = 0
     for epoch in range(1, phase2_epochs + 1):
@@ -210,6 +216,10 @@ def run_training(cfg: dict) -> dict:
         for imgs, labels in pbar:
             imgs = imgs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
+            if step < p2_warmup_steps:
+                warmup_factor = (step + 1) / p2_warmup_steps
+                for pg in p2_optim.param_groups:
+                    pg["lr"] = p2_base_lr * warmup_factor
             p2_optim.zero_grad()
             with torch.amp.autocast("cuda", enabled=(device == "cuda")):
                 emb = model.embed_normalized(imgs)
@@ -244,7 +254,7 @@ def run_training(cfg: dict) -> dict:
         )
         (ckpt_dir / "history.json").write_text(json.dumps(history, indent=2))
 
-        if metrics["mean_acc"] > best_acc and metrics["spread"] > 0.05:
+        if metrics["mean_acc"] > best_acc and metrics["spread"] > 0.02:
             best_acc = metrics["mean_acc"]
             torch.save(
                 {"model": model.state_dict(), "cfg": cfg},

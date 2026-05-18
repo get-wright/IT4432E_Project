@@ -20,7 +20,7 @@ train:
   num_workers: 8
   embedding_dim: 512
   # P2 (ArcFace, SGD m=0.9 + step decay)
-  p2_lr: 0.01
+  p2_lr: 0.003
   # Milestones are P2-relative (scheduler.step() called once per P2 epoch).
   # Canonical ArcFace decay at 62.5% and 87.5% of total run, mapped through P1=3:
   # 30 * 0.625 - 3 = 16.75 -> 17;  30 * 0.875 - 3 = 23.25 -> 24.
