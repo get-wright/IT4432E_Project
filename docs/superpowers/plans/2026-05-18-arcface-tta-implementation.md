@@ -16,15 +16,15 @@
 
 **New files:**
 - `training_pipeline/src/arcface_head.py` — ArcFace margin loss head
-- `training_pipeline/configs/train_arcface.yaml` — ArcFace recipe config
 - `training_pipeline/tests/test_arcface_head.py` — unit tests for the head
-- `training_pipeline/tests/test_arcface_smoketest.py` — end-to-end mini run
 - `evaluation/benchmark_insightface.py` — 8-suite .bin verification runner
 
 **Modified files:**
 - `training_pipeline/src/model.py` — add `embed_tta` method
 - `training_pipeline/src/eval_lfw.py:164` — `use_tta` param threaded into `evaluate_lfw`
-- `training_pipeline/src/train.py` — P2 swap to ArcFace + SGD + step decay + center logging + `checkpoint_name` fix at line 233
+- `training_pipeline/src/train.py` — full P2 swap to ArcFace + SGD + step decay + center logging + `checkpoint_name` fix; remove `semi_hard_triplet_loss` import and triplet bookkeeping
+- `training_pipeline/configs/train.yaml` — **overwrite** with the ArcFace recipe (this branch abandons the triplet recipe; one config file is enough)
+- `training_pipeline/tests/test_smoke.py` — **rewrite** to exercise the new ArcFace pipeline end-to-end (the old triplet-recipe smoke is orphaned once `semi_hard_triplet_loss` is removed)
 - `evaluation/eval_lfw.py` — `--tta` CLI flag, forward to `evaluate_lfw`
 - `evaluation/eval_pins.py` — `--tta` CLI flag, forward to embedding loop
 - `application/backend/inference.py` — `use_tta` ctor arg on `Embedder`
@@ -46,17 +46,28 @@
 
 **Files:** none (git operation)
 
-- [ ] **Step 1: Verify current branch + HEAD**
+- [ ] **Step 1: Check + handle worktree state**
 
-Run: `git status && git log --oneline -3`
-Expected: clean working tree on `feat/face-recognition-siamese`. The most recent commits must include both the spec (`776f17f`) and this plan (`4460b7e` or newer) — if either is missing, pull origin first. Forking from a HEAD that predates them would drop the design docs from the new branch.
+Run: `git status`
+Expected: ideally clean. If there are uncommitted modifications (the repo today has dirty app frontend/backend files from prior demo iterations), you must NOT carry them onto the new branch silently. Decide between:
 
-- [ ] **Step 2: Create + switch to new branch**
+  - **Stash** (preferred if changes are temporary): `git stash push -u -m "pre-arcface-branch stash"` — preserves untracked too. After the new branch is created, the stash stays on the previous branch via `git stash list`.
+  - **Commit** (if changes are already-intended work for `feat/face-recognition-siamese`): commit them on the current branch with a clear message before branching.
+  - **Discard** (only if you're certain): `git restore <file>...` for the specific files you want gone.
+
+Re-run `git status` until it's clean before continuing.
+
+- [ ] **Step 2: Verify branch + HEAD**
+
+Run: `git log --oneline -3`
+Expected: on `feat/face-recognition-siamese`. The most recent commits must include both the spec (`776f17f`) and this plan (`4460b7e` or newer) — if either is missing, `git pull origin feat/face-recognition-siamese` first. Forking from a HEAD that predates them would drop the design docs from the new branch.
+
+- [ ] **Step 3: Create + switch to new branch**
 
 Run: `git checkout -b feat/arcface-tta`
 Expected: `Switched to a new branch 'feat/arcface-tta'`
 
-- [ ] **Step 3: Sanity push to remote (track upstream early)**
+- [ ] **Step 4: Sanity push to remote (track upstream early)**
 
 Run: `git push -u origin feat/arcface-tta`
 Expected: new remote branch created.
@@ -463,16 +474,34 @@ In `evaluation/eval_pins.py`, in `main()` after the existing `ap.add_argument` c
                     help="Use flip-averaged TTA at embed time")
 ```
 
-Locate the embedding loop inside `main()` (it iterates `DataLoader(ds, ...)` and calls `model.embed_normalized(...)`). Replace the `model.embed_normalized(x)` call with:
+The current embedding loop sits at lines 103-107:
 
 ```python
-        embed_fn = model.embed_tta if args.tta else model.embed_normalized
-        for x in dl:
-            x = x.to(args.device, non_blocking=True)
-            embs.append(embed_fn(x).cpu())
+    embs: list[torch.Tensor] = []
+    for x in dl:
+        x = x.to(args.device, non_blocking=True)
+        with torch.no_grad():
+            embs.append(model.embed_normalized(x).cpu())
 ```
 
-(Adjust variable names — `embs` or `embs_list` — to match the surrounding code; do not rename existing locals.)
+Make two changes to this block — do **not** add a new loop:
+
+1. Insert a single line **before** the existing `for x in dl:` to bind `embed_fn`:
+   ```python
+       embed_fn = model.embed_tta if args.tta else model.embed_normalized
+   ```
+2. Inside the loop, replace **only** `model.embed_normalized(x)` with `embed_fn(x)`. The surrounding `embs.append(... .cpu())` wrapper and the `with torch.no_grad():` context stay exactly as they are.
+
+After the edit, the block reads:
+
+```python
+    embs: list[torch.Tensor] = []
+    embed_fn = model.embed_tta if args.tta else model.embed_normalized
+    for x in dl:
+        x = x.to(args.device, non_blocking=True)
+        with torch.no_grad():
+            embs.append(embed_fn(x).cpu())
+```
 
 - [ ] **Step 3: Smoke-run the CLIs with the current best.pt (sanity, no commit yet)**
 
@@ -605,14 +634,17 @@ def _run_one(model: FaceEmbedding, bin_path: Path, device: str, use_tta: bool) -
     neg = sims[~labels]
     mean_acc, std_acc, _ = _ten_fold_cv_accuracy(sims, labels)
     acc_at_lfw_thr = float(((sims >= LFW_TUNED_THRESHOLD) == labels).mean())
+    # Schema matches evaluation/results_insightface_bench.json (n_pairs, n_pos, n_neg, mean_acc_cv, …).
     return {
+        "n_pairs": int(len(sims)),
+        "n_pos": int(labels.sum()),
+        "n_neg": int((~labels).sum()),
         "mean_acc_cv": mean_acc,
         "std_acc_cv": std_acc,
         f"acc_at_lfw_threshold_{LFW_TUNED_THRESHOLD}": acc_at_lfw_thr,
-        "spread": float(pos.mean() - neg.mean()),
         "pos_sim_mean": float(pos.mean()),
         "neg_sim_mean": float(neg.mean()),
-        "n_pairs": int(len(sims)),
+        "spread": float(pos.mean() - neg.mean()),
     }
 
 
@@ -678,14 +710,15 @@ git commit -m "feat(eval): commit benchmark_insightface.py — 8-suite .bin runn
 ## Task 6: ArcFace config + train.py P2 swap + `checkpoint_name` fix
 
 **Files:**
-- Create: `training_pipeline/configs/train_arcface.yaml`
+- Overwrite: `training_pipeline/configs/train.yaml`
 - Modify: `training_pipeline/src/train.py`
 
-- [ ] **Step 1: Write the new config**
+- [ ] **Step 1: Overwrite `train.yaml` with the ArcFace recipe**
 
-Create `training_pipeline/configs/train_arcface.yaml`:
+This branch abandons the triplet recipe — `train.py` becomes unconditionally ArcFace. Keeping a stale `train.yaml` with `margin` and no ArcFace keys would cause the default `--config` invocation to crash on `cfg["train"]["arcface_s"]`. Replace **the entire contents** of `training_pipeline/configs/train.yaml` with:
 
 ```yaml
+# ArcFace + TTA recipe. See docs/superpowers/specs/2026-05-18-arcface-tta-design.md.
 manifest: process-data/manifest.parquet
 checkpoints_dir: training_pipeline/checkpoints
 tensorboard_dir: training_pipeline/tensorboard_logs
@@ -844,31 +877,33 @@ Expected: no matches.
 
 - [ ] **Step 4: Run the full existing test suite to confirm nothing else broke**
 
-Run: `.venv/bin/pytest training_pipeline/tests application/tests -q -x --ignore=training_pipeline/tests/test_smoke.py`
-(The slow `test_smoke.py` end-to-end run is exercised separately in the next task.)
+Run: `.venv/bin/pytest training_pipeline/tests application/tests -q -x --ignore=training_pipeline/tests/test_smoke.py -m "not slow"`
+(The slow end-to-end smoke is rewritten and exercised in Task 7.)
 
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add training_pipeline/configs/train_arcface.yaml training_pipeline/src/train.py
-git commit -m "feat(train): P2 swap to ArcFace + SGD + MultiStepLR + center-norm log; checkpoint_name driven by config"
+git add training_pipeline/configs/train.yaml training_pipeline/src/train.py
+git commit -m "feat(train): P2 swap to ArcFace + SGD + MultiStepLR + center-norm log; overwrite train.yaml with ArcFace recipe"
 ```
 
 ---
 
-## Task 7: ArcFace smoke test
+## Task 7: Rewrite `test_smoke.py` for ArcFace pipeline
 
 **Files:**
-- Create: `training_pipeline/tests/test_arcface_smoketest.py`
+- Overwrite: `training_pipeline/tests/test_smoke.py`
 
-- [ ] **Step 1: Write the smoke test**
+The existing `test_smoke.py` constructs a cfg dict with `margin` and other triplet-only keys, and asserts existence of `phase1_end.pt` + `last.pt`. After Task 6, `run_training` reads `arcface_s`, `arcface_m`, `p2_lr`, etc., so the old cfg crashes. Rewrite the file to exercise the new pipeline.
 
-Create `training_pipeline/tests/test_arcface_smoketest.py`:
+- [ ] **Step 1: Replace `test_smoke.py` contents**
+
+Overwrite `training_pipeline/tests/test_smoke.py` with:
 
 ```python
-"""End-to-end mini run with the ArcFace config — must train without NaN/collapse."""
+"""End-to-end smoke test: a tiny ArcFace two-phase run on synthetic data."""
 from __future__ import annotations
 
 import math
@@ -996,14 +1031,14 @@ def test_arcface_smoke_no_collapse(synthetic_manifest, monkeypatch, tmp_path):
 
 - [ ] **Step 2: Run the smoke test**
 
-Run: `.venv/bin/pytest training_pipeline/tests/test_arcface_smoketest.py -v -m slow`
+Run: `.venv/bin/pytest training_pipeline/tests/test_smoke.py -v -m slow`
 Expected: PASS in <2 minutes on CPU. No NaN warnings in output.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add training_pipeline/tests/test_arcface_smoketest.py
-git commit -m "test(smoke): ArcFace two-phase end-to-end on synthetic data"
+git add training_pipeline/tests/test_smoke.py
+git commit -m "test(smoke): rewrite for ArcFace pipeline (triplet recipe gone)"
 ```
 
 ---
@@ -1252,16 +1287,33 @@ Make sure `import hashlib` is added near the existing imports.
 Run: `.venv/bin/pytest application/tests -v`
 Expected: all pass (the version guard is opt-in; default `embedding_version=None` keeps old behavior, and `main.py` only sets a version when actually loading the model).
 
-- [ ] **Step 4: Manual sanity — start app, verify it loads existing best.pt**
+- [ ] **Step 4: Manual sanity — start app against a FRESH data dir**
 
-Run:
+The pre-existing `application/embeddings/vectors.npy` has 2 vectors and no `meta.json` — by design the new guard refuses to load it (drift case). Use a throwaway data dir for this check so the existing store isn't touched:
+
 ```bash
-APP_TTA=0 .venv/bin/uvicorn application.backend.main:app --port 8001 &
+APP_DATA_DIR=/tmp/_arcface_sanity_$$ APP_TTA=0 \
+    .venv/bin/uvicorn application.backend.main:app --port 8001 &
 sleep 3
 curl -sS http://127.0.0.1:8001/enrolled
 kill %1
+rm -rf /tmp/_arcface_sanity_*
 ```
-Expected: returns `[]` or the current list of enrolled identities without error. The version sidecar is created on first successful enroll, not on load of an empty store.
+Expected: returns `[]` (empty store + auto-created meta.json) without error.
+
+- [ ] **Step 4b: Sanity — confirm the guard refuses the existing legacy store**
+
+```bash
+APP_TTA=0 .venv/bin/uvicorn application.backend.main:app --port 8001 &
+sleep 3
+# This should fail because application/embeddings/vectors.npy has 2 vectors
+# but no meta.json — exactly the drift case the guard prevents.
+curl -sS -w '\nHTTP %{http_code}\n' http://127.0.0.1:8001/enrolled || true
+kill %1
+```
+Expected: 500-class error OR uvicorn process dies at startup with a `RuntimeError("Embedding store … has 2 vectors but no meta.json …")` in its stderr. Either is acceptable — the point is the legacy store is rejected, not silently loaded.
+
+To unblock real app use afterward, the user must either re-enroll into a fresh dir or delete the legacy `application/embeddings/vectors.npy` and `index.db`. Do **not** delete them as part of this plan — that's a deployment-time decision.
 
 - [ ] **Step 5: Commit**
 
@@ -1382,7 +1434,6 @@ In tmux:
 cd /root/IT4432E_Project
 mkdir -p training_pipeline/logs
 .venv/bin/python -m training_pipeline.src.train \
-    --config training_pipeline/configs/train_arcface.yaml \
     2>&1 | tee training_pipeline/logs/arcface_run.log
 ```
 
