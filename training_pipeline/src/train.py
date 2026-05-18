@@ -1,4 +1,4 @@
-"""Two-phase Siamese training: softmax warmup (CE) → semi-hard triplet."""
+"""Two-phase training: softmax warmup (CE) → ArcFace + SGD + MultiStepLR."""
 from __future__ import annotations
 
 import argparse
@@ -13,9 +13,9 @@ from torch.utils.data import DataLoader, RandomSampler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from .arcface_head import ArcFaceHead
 from .dataset import FaceDataset, PKSampler, train_transform
-from .eval_lfw import LfwPair, evaluate_lfw, load_pairs_txt
-from .loss import semi_hard_triplet_loss
+from .eval_lfw import evaluate_lfw, load_pairs_txt
 from .model import ClassifierHead, FaceEmbedding
 from .utils import AverageMeter, set_seed
 
@@ -176,63 +176,83 @@ def run_training(cfg: dict) -> dict:
         persistent_workers=(cfg["train"]["num_workers"] > 0),
     )
 
-    backbone_params, head_params = _split_params(model)
-    p2_optim = _build_optimizer(
-        backbone_params, head_params,
-        cfg["train"]["lr_backbone"], cfg["train"]["lr_head"], cfg["train"]["weight_decay"],
-    )
-    p2_total_steps = phase2_epochs * phase2_batches
-    p2_warmup = cfg["train"]["warmup_steps"]
-    step = 0
-    zero_triplet_streak = 0
+    # === P2: ArcFace head + SGD m=0.9 + MultiStepLR step decay ===
+    arc_head = ArcFaceHead(
+        embedding_dim=cfg["train"]["embedding_dim"],
+        num_classes=n_identities,
+        s=cfg["train"]["arcface_s"],
+        m=cfg["train"]["arcface_m"],
+    ).to(device)
 
+    p2_optim = torch.optim.SGD(
+        [
+            {"params": model.parameters()},
+            {"params": arc_head.parameters()},
+        ],
+        lr=cfg["train"]["p2_lr"],
+        momentum=0.9,
+        weight_decay=cfg["train"]["weight_decay"],
+        nesterov=False,
+    )
+
+    p2_scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        p2_optim,
+        milestones=cfg["train"]["p2_lr_decay_epochs"],
+        gamma=cfg["train"]["p2_lr_decay_gamma"],
+    )
+
+    step = 0
     for epoch in range(1, phase2_epochs + 1):
         model.train()
+        arc_head.train()
         meter = AverageMeter()
-        n_triplet_meter = AverageMeter()
         pbar = tqdm(p2_loader, desc=f"P2 epoch {epoch}/{phase2_epochs}")
         for imgs, labels in pbar:
             imgs = imgs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
-            for pg, base in zip(p2_optim.param_groups, [cfg["train"]["lr_backbone"], cfg["train"]["lr_head"]]):
-                pg["lr"] = _cosine_lr(step, p2_total_steps, p2_warmup, base)
             p2_optim.zero_grad()
             with torch.amp.autocast("cuda", enabled=(device == "cuda")):
-                emb = model(imgs)
-                loss, n_triplets = semi_hard_triplet_loss(emb, labels, margin=cfg["train"]["margin"])
-            if n_triplets > 0:
-                scaler.scale(loss).backward()
-                scaler.step(p2_optim)
-                scaler.update()
-                zero_triplet_streak = 0
-            else:
-                zero_triplet_streak += 1
-                if zero_triplet_streak >= 100:
-                    raise RuntimeError(
-                        "100 consecutive batches produced zero usable triplets — sampler/mining bug. "
-                        "Inspect PKSampler output and semi_hard_triplet_loss selection."
-                    )
+                emb = model.embed_normalized(imgs)
+                logits = arc_head(emb, labels)
+                loss = torch.nn.functional.cross_entropy(logits, labels)
+            scaler.scale(loss).backward()
+            scaler.step(p2_optim)
+            scaler.update()
             meter.update(loss.item(), imgs.size(0))
-            n_triplet_meter.update(n_triplets, 1)
-            pbar.set_postfix(loss=meter.avg, n_tri=n_triplet_meter.avg)
+            pbar.set_postfix(loss=meter.avg)
             writer.add_scalar("p2/train_loss_step", loss.item(), step)
-            writer.add_scalar("p2/n_triplets_step", n_triplets, step)
             step += 1
-        metrics = _run_lfw_probe(model, pairs, aligned_root, raw_root, device,
-                                 cfg["eval"]["max_pairs_inloop"])
+
+        p2_scheduler.step()
+
+        metrics = _run_lfw_probe(
+            model, pairs, aligned_root, raw_root, device,
+            cfg["eval"]["max_pairs_inloop"],
+        )
         history["train_loss"].append(meter.avg)
         history["lfw_acc"].append(metrics["mean_acc"])
         history["spread"].append(metrics["spread"])
         history["phase"].append(2)
-        print(f"[P2 epoch {epoch}] train_loss={meter.avg:.4f}  lfw_acc={metrics['mean_acc']:.4f}  "
-              f"spread={metrics['spread']:.4f}  n_triplets/avg={n_triplet_meter.avg:.1f}")
+
+        center_norms = arc_head.center_norms()
+        print(
+            f"[P2 epoch {epoch}] train_loss={meter.avg:.4f}  "
+            f"lfw_acc={metrics['mean_acc']:.4f}  spread={metrics['spread']:.4f}  "
+            f"center_norm mean={center_norms.mean().item():.3f} "
+            f"min={center_norms.min().item():.3f} "
+            f"max={center_norms.max().item():.3f}"
+        )
         (ckpt_dir / "history.json").write_text(json.dumps(history, indent=2))
 
         if metrics["mean_acc"] > best_acc and metrics["spread"] > 0.05:
             best_acc = metrics["mean_acc"]
-            torch.save({"model": model.state_dict(), "cfg": cfg}, ckpt_dir / "best.pt")
+            torch.save(
+                {"model": model.state_dict(), "cfg": cfg},
+                ckpt_dir / cfg.get("checkpoint_name", "best.pt"),
+            )
 
     torch.save({"model": model.state_dict(), "cfg": cfg}, ckpt_dir / "last.pt")
+    torch.save(arc_head.state_dict(), ckpt_dir / "arcface_head.pt")
     return {"best_acc": best_acc, "history": history}
 
 

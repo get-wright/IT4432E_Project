@@ -1,22 +1,33 @@
+# ArcFace + TTA recipe. See docs/superpowers/specs/2026-05-18-arcface-tta-design.md.
 manifest: process-data/manifest.parquet
 checkpoints_dir: training_pipeline/checkpoints
 tensorboard_dir: training_pipeline/tensorboard_logs
 seed: 42
+checkpoint_name: best_arcface.pt
 
 train:
   phase1_epochs: 3
-  phase2_epochs: 17
+  phase2_epochs: 27
   batches_per_epoch: 1500
   phase1_batch_size: 128
   p: 32
   k: 4
-  margin: 0.3
+  # P1 (CE warmup, AdamW)
   lr_head: 5.0e-4
   lr_backbone: 1.0e-4
   weight_decay: 5.0e-4
   warmup_steps: 500
   num_workers: 8
   embedding_dim: 512
+  # P2 (ArcFace, SGD m=0.9 + step decay)
+  p2_lr: 0.01
+  # Milestones are P2-relative (scheduler.step() called once per P2 epoch).
+  # Canonical ArcFace decay at 62.5% and 87.5% of total run, mapped through P1=3:
+  # 30 * 0.625 - 3 = 16.75 -> 17;  30 * 0.875 - 3 = 23.25 -> 24.
+  p2_lr_decay_epochs: [17, 24]
+  p2_lr_decay_gamma: 0.1
+  arcface_s: 64.0
+  arcface_m: 0.5
 
 eval:
   pairs_txt: preprocess-data/lfw/pairs.txt
