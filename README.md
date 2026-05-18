@@ -2,9 +2,7 @@
 
 Course project for IT4432E (HUST). Trains a face embedding network with triplet loss, evaluates it on LFW, and serves it through a small web app that does enrollment and verification from the browser webcam.
 
-Pipeline: CASIA-WebFace → MTCNN alignment → ResNet50 + 512-d embedding head trained with batch-hard triplet loss → LFW 10-fold verification benchmark → FastAPI app with SQLite-backed enrollment store.
-
-LFW verification accuracy: **97.48% ± 1.46%** (10-fold CV, 2,378 pairs). Training ran ~17 minutes on a single H100 80GB.
+Pipeline: CASIA-WebFace → MTCNN alignment → ResNet50 + 512-d embedding head trained with a two-phase recipe (softmax warmup → semi-hard triplet) → LFW 10-fold verification benchmark → FastAPI app with SQLite-backed enrollment store.
 
 ## Layout
 
@@ -42,20 +40,23 @@ Unit tests cover model output shape, triplet loss math, PKSampler invariants, en
 ## Training
 
 Data (from Kaggle):
-- [CASIA-WebFace (cropped)](https://www.kaggle.com/datasets/nhatdealin/casiawebface-dataset-crop) — `nhatdealin/casiawebface-dataset-crop`. 1,249 identities, capped at 50 images per identity, 90/10 train/val split → 47,751 aligned faces for training.
-- [LFW (Labeled Faces in the Wild)](https://www.kaggle.com/datasets/jessicali9530/lfw-dataset) — `jessicali9530/lfw-dataset`. 901 identities, capped at 200, 7,240 aligned faces, held out entirely for evaluation.
+- [CASIA-WebFace](https://www.kaggle.com/datasets/debarghamitraroy/casia-webface) — `debarghamitraroy/casia-webface`. Shipped in InsightFace MXNet RecordIO format; extracted to a folder-per-identity layout before training. Used as the training set.
+- [LFW (Labeled Faces in the Wild)](https://www.kaggle.com/datasets/jessicali9530/lfw-dataset) — `jessicali9530/lfw-dataset`. Held out entirely for evaluation (10-fold verification on the canonical 6,000 pairs).
 - [CelebA](https://www.kaggle.com/datasets/jessicali9530/celeba-dataset) — `jessicali9530/celeba-dataset`. Was in the original plan but this Kaggle dump shipped without `identity_CelebA.txt`, so it was dropped.
 
-Reference implementation that shaped the design: [Face Recognition with Siamese Network](https://www.kaggle.com/code/tatianakushniruk/face-recognition-with-siamese-network) by tatianakushniruk.
+Reference implementation that shaped the early design: [Face Recognition with Siamese Network](https://www.kaggle.com/code/tatianakushniruk/face-recognition-with-siamese-network) by tatianakushniruk.
 
-Model: `torchvision.models.resnet50` (ImageNet V2 weights) feeds a `Linear(2048, 512)` head whose output is L2-normalised. Loss is batch-hard triplet (margin 0.3, Hermans et al. 2017). Batches are built by a PKSampler — 32 identities × 4 images = 128 samples per batch, 1,500 batches per epoch, 20 epochs. AdamW with split learning rates (backbone 3e-5, head 3e-4), cosine schedule with 500-step warmup, mixed precision.
+Model: `torchvision.models.resnet50` (ImageNet V2 weights) feeds a `Linear(2048, 512)` head. `forward()` returns the raw 512-d vector; L2 normalisation happens inside the triplet loss and at inference time via `embed_normalized()`. Training is two-phase:
 
-Final train loss 0.14 (down from 0.33). Best LFW in-loop accuracy 0.976 on a 1k-pair subset; full 10-fold CV reported above.
+1. **Softmax warmup (3 epochs).** A temporary `Linear(512, n_identities)` classifier on top of the embedding; cross-entropy on identity labels with `RandomSampler(replacement=True)` and 1,500 batches × 128 images per epoch.
+2. **Semi-hard triplet (17 epochs).** PKSampler (P=32 identities × K=4 images = 128 batch), soft-margin triplet loss `softplus(d_ap - d_an)` with `d_ap < d_an < d_ap + margin` mining (margin 0.3, FaceNet 2015).
+
+AdamW with split learning rates (backbone 1e-4, head 5e-4), cosine schedule with 500-step warmup, mixed precision on H100. The end of Phase 1 enforces `spread > 0.05` on an LFW probe — if embeddings collapsed, training aborts before triplet starts. `best.pt` is only promoted when validation accuracy improves *and* spread stays > 0.05.
 
 Reproducing training:
 ```bash
-bash infra/setup_vm.sh         # installs PyTorch + downloads + aligns datasets
-bash infra/run_training.sh     # 20 epochs, ~17 min on H100
+bash infra/setup_vm.sh         # installs PyTorch + downloads datasets
+bash infra/run_training.sh     # ~25 min on H100 (3 warmup + 17 triplet epochs)
 python -m evaluation.eval_lfw  # 10-fold benchmark, writes evaluation/results.json
 ```
 
