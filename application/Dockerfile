@@ -13,7 +13,7 @@ COPY application /app/application
 
 ENV APP_CKPT=/app/application/models/best.pt
 ENV APP_DATA_DIR=/app/application/embeddings
-ENV APP_THRESHOLD=0.5
+ENV APP_THRESHOLD=0.565
 ENV PYTHONPATH=/app
 
 EXPOSE 8000

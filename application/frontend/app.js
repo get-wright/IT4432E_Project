@@ -88,6 +88,9 @@ function flashFrame() {
 }
 
 function snapBase64() {
+  if (!video.videoWidth || !video.videoHeight) {
+    throw new Error('Camera not ready — grant permission or wait for the stream to start.');
+  }
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   const ctx = canvas.getContext('2d');
