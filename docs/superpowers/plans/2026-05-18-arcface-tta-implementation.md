@@ -6,9 +6,9 @@
 
 **Architecture:** P1 (CE softmax warmup) unchanged — same 3 epochs, same AdamW. P2 swaps in a new `ArcFaceHead` (standard non-easy-margin, s=64 m=0.5) trained with SGD m=0.9 + step decay. Eval and app embedders gain a `use_tta` switch that averages embeddings of a face and its horizontal flip. New `evaluation/benchmark_insightface.py` produces the 8-suite comparison JSON. The app guards enrolled vectors against silent score drift via a model-SHA + TTA-flag sidecar.
 
-**Tech Stack:** PyTorch 2.12, torchvision, facenet-pytorch, FastAPI, pytest. Reference spec: `docs/superpowers/specs/2026-05-18-arcface-tta-design.md` (commit `776f17f`).
+**Tech Stack:** PyTorch ≥ 2.6 (as declared in `pyproject.toml`), torchvision, facenet-pytorch, FastAPI, pytest. Reference spec: `docs/superpowers/specs/2026-05-18-arcface-tta-design.md` (commit `776f17f`).
 
-**Reference repo state:** Branch `feat/face-recognition-siamese` at HEAD `cad9788`. The new branch forks from here.
+**Reference repo state:** Branch `feat/face-recognition-siamese` at a HEAD that includes both this plan and the corrected spec (i.e., HEAD ≥ `4460b7e` — the plan commit, which itself descends from spec commit `776f17f`). Forking from an older commit would drop the spec and this document, so always verify HEAD before branching (Task 0 Step 1).
 
 ---
 
@@ -48,8 +48,8 @@
 
 - [ ] **Step 1: Verify current branch + HEAD**
 
-Run: `git status && git log --oneline -1`
-Expected: clean working tree on `feat/face-recognition-siamese`, HEAD ≥ `776f17f` (spec commit must be present so the new branch contains the design doc).
+Run: `git status && git log --oneline -3`
+Expected: clean working tree on `feat/face-recognition-siamese`. The most recent commits must include both the spec (`776f17f`) and this plan (`4460b7e` or newer) — if either is missing, pull origin first. Forking from a HEAD that predates them would drop the design docs from the new branch.
 
 - [ ] **Step 2: Create + switch to new branch**
 
@@ -537,21 +537,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from torchvision import transforms
 
+from training_pipeline.src.dataset import eval_transform
 from training_pipeline.src.model import FaceEmbedding
 
 BENCH_NAMES = ["lfw", "agedb_30", "cfp_ff", "cfp_fp", "cplfw", "calfw", "sllfw", "talfw"]
 LFW_TUNED_THRESHOLD = 0.565
-
-
-def _tf() -> transforms.Compose:
-    """160x160 inference transform consistent with training data."""
-    return transforms.Compose([
-        transforms.Resize((160, 160)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-    ])
 
 
 def _load_bin(bin_path: Path) -> tuple[list[Image.Image], np.ndarray]:
@@ -569,7 +560,9 @@ def _load_bin(bin_path: Path) -> tuple[list[Image.Image], np.ndarray]:
 @torch.no_grad()
 def _embed_all(model: FaceEmbedding, images: list[Image.Image], device: str,
                use_tta: bool, batch_size: int = 128) -> torch.Tensor:
-    tf = _tf()
+    # Reuse the exact eval transform the training pipeline uses (ImageNet mean/std,
+    # 160x160 resize, ToTensor). This is what produced existing eval numbers.
+    tf = eval_transform()
     embed_fn = model.embed_tta if use_tta else model.embed_normalized
     out = []
     for i in range(0, len(images), batch_size):
@@ -752,7 +745,7 @@ Replace **only the literal `"best.pt"`** on the `torch.save` line so the new YAM
 
 Do **NOT** change the `last.pt` save two lines below — that file stays literal.
 
-- [ ] **Step 3: Swap P2 loss/optimizer/scheduler**
+- [ ] **Step 3: Replace the entire P2 block with the ArcFace version**
 
 In `training_pipeline/src/train.py`, add the import near the existing imports:
 
@@ -760,10 +753,12 @@ In `training_pipeline/src/train.py`, add the import near the existing imports:
 from .arcface_head import ArcFaceHead
 ```
 
-Find the P2 setup block (just after `p2_sampler = PKSampler(...)` and before the P2 epoch loop). The current code constructs a triplet loss + AdamW. Replace the P2 head/optim/loss construction with:
+`semi_hard_triplet_loss` is no longer used by P2; you can remove `from .loss import semi_hard_triplet_loss` from the imports.
+
+Then **delete** the current P2 block (everything from `p2_optim = _build_optimizer(...)` through the final `torch.save({"model": ...}, ckpt_dir / "last.pt")` line — roughly `train.py:180-235`) and replace it with the complete replacement below. This avoids leaving stale triplet bookkeeping (`n_triplet_meter`, `zero_triplet_streak`, `n_triplets`, `p2/n_triplets_step` writer, `_cosine_lr` scheduling) live in the file.
 
 ```python
-    # === P2: ArcFace head + SGD + step decay ===
+    # === P2: ArcFace head + SGD m=0.9 + MultiStepLR step decay ===
     arc_head = ArcFaceHead(
         embedding_dim=cfg["train"]["embedding_dim"],
         num_classes=n_identities,
@@ -787,40 +782,65 @@ Find the P2 setup block (just after `p2_sampler = PKSampler(...)` and before the
         milestones=cfg["train"]["p2_lr_decay_epochs"],
         gamma=cfg["train"]["p2_lr_decay_gamma"],
     )
-```
 
-(`n_identities` is already in scope — it's the same variable P1 passes to `ClassifierHead` at `train.py:84`. No new derivation needed.)
-
-Then in the P2 batch loop, replace the current triplet-loss call:
-
-```python
+    step = 0
+    for epoch in range(1, phase2_epochs + 1):
+        model.train()
+        arc_head.train()
+        meter = AverageMeter()
+        pbar = tqdm(p2_loader, desc=f"P2 epoch {epoch}/{phase2_epochs}")
+        for imgs, labels in pbar:
+            imgs = imgs.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+            p2_optim.zero_grad()
             with torch.amp.autocast("cuda", enabled=(device == "cuda")):
-                emb = model.embed_normalized(images)
+                emb = model.embed_normalized(imgs)
                 logits = arc_head(emb, labels)
                 loss = torch.nn.functional.cross_entropy(logits, labels)
-```
+            scaler.scale(loss).backward()
+            scaler.step(p2_optim)
+            scaler.update()
+            meter.update(loss.item(), imgs.size(0))
+            pbar.set_postfix(loss=meter.avg)
+            writer.add_scalar("p2/train_loss_step", loss.item(), step)
+            step += 1
 
-(Drop the `n_triplet_meter` update and any triplet-loss bookkeeping inside this branch — ArcFace doesn't produce that count. If `n_triplet_meter.avg` appears in the per-epoch print, replace it with a constant `0.0` or remove it from the f-string.)
-
-After each P2 epoch ends (right after the existing `history.json` write), add:
-
-```python
         p2_scheduler.step()
+
+        metrics = _run_lfw_probe(
+            model, pairs, aligned_root, raw_root, device,
+            cfg["eval"]["max_pairs_inloop"],
+        )
+        history["train_loss"].append(meter.avg)
+        history["lfw_acc"].append(metrics["mean_acc"])
+        history["spread"].append(metrics["spread"])
+        history["phase"].append(2)
 
         center_norms = arc_head.center_norms()
         print(
-            f"[P2 epoch {epoch}] center_norm "
-            f"mean={center_norms.mean().item():.3f} "
+            f"[P2 epoch {epoch}] train_loss={meter.avg:.4f}  "
+            f"lfw_acc={metrics['mean_acc']:.4f}  spread={metrics['spread']:.4f}  "
+            f"center_norm mean={center_norms.mean().item():.3f} "
             f"min={center_norms.min().item():.3f} "
             f"max={center_norms.max().item():.3f}"
         )
-```
+        (ckpt_dir / "history.json").write_text(json.dumps(history, indent=2))
 
-After P2 ends (at the very bottom of `run_training`, before `return`), save the ArcFace head separately:
+        if metrics["mean_acc"] > best_acc and metrics["spread"] > 0.05:
+            best_acc = metrics["mean_acc"]
+            torch.save(
+                {"model": model.state_dict(), "cfg": cfg},
+                ckpt_dir / cfg.get("checkpoint_name", "best.pt"),
+            )
 
-```python
+    torch.save({"model": model.state_dict(), "cfg": cfg}, ckpt_dir / "last.pt")
     torch.save(arc_head.state_dict(), ckpt_dir / "arcface_head.pt")
 ```
+
+This replaces the entire triplet P2 with ArcFace P2 in one block — `n_identities`, `phase2_epochs`, `p2_loader`, `scaler`, `writer`, `pairs`, `aligned_root`, `raw_root`, `history`, `best_acc`, and `ckpt_dir` are all already in scope from the P1 setup above. Note that this block subsumes the earlier `checkpoint_name` fix from Step 2 — that is, Step 2's edit and this block both reach the same final state. After completing Step 3, verify line-by-line that no `semi_hard_triplet_loss`, `n_triplet`, or `zero_triplet_streak` references remain anywhere in `train.py`:
+
+Run: `grep -nE "semi_hard|n_triplet|zero_triplet" training_pipeline/src/train.py`
+Expected: no matches.
 
 - [ ] **Step 4: Run the full existing test suite to confirm nothing else broke**
 
@@ -957,17 +977,21 @@ def test_arcface_smoke_no_collapse(synthetic_manifest, monkeypatch, tmp_path):
 
     # 1. Finished and reported some history.
     assert "history" in result
-    # 2. The configured guarded best-save name was honored.
-    assert (tmp_path / "ckpts" / "best_arcface.pt").exists() or (tmp_path / "ckpts" / "last.pt").exists(), \
-        "training must have produced at least one checkpoint"
-    # 3. last.pt always exists.
+    # 2. Every recorded train loss is finite (no NaN/inf made it into bookkeeping).
+    assert all(math.isfinite(v) for v in result["history"]["train_loss"]), \
+        f"non-finite loss in history: {result['history']['train_loss']}"
+    # 3. With the stubbed probe returning spread=0.12 (>0.05) and accuracy 0.55, the
+    #    promotion guard MUST have fired at least once → best_arcface.pt exists.
+    best_path = tmp_path / "ckpts" / "best_arcface.pt"
+    assert best_path.exists(), f"best_arcface.pt must be produced by guarded best-save, got: {list((tmp_path / 'ckpts').iterdir())}"
+    # 4. last.pt always exists (unguarded end-of-training snapshot).
     assert (tmp_path / "ckpts" / "last.pt").exists()
-    # 4. ArcFace head was saved separately.
+    # 5. ArcFace head was saved separately.
     assert (tmp_path / "ckpts" / "arcface_head.pt").exists()
-    # 5. Loaded checkpoint has the expected schema.
-    if (tmp_path / "ckpts" / "best_arcface.pt").exists():
-        ckpt = torch.load(tmp_path / "ckpts" / "best_arcface.pt", map_location="cpu", weights_only=False)
-        assert "model" in ckpt and "cfg" in ckpt
+    # 6. The guarded best checkpoint has the expected schema.
+    ckpt = torch.load(best_path, map_location="cpu", weights_only=False)
+    assert "model" in ckpt and "cfg" in ckpt
+    assert ckpt["cfg"]["checkpoint_name"] == "best_arcface.pt"
 ```
 
 - [ ] **Step 2: Run the smoke test**
@@ -1133,18 +1157,34 @@ class EnrollmentDB:
 
     def _load_vectors(self) -> None:
         if self.vec_path.exists():
-            if self.embedding_version is not None and self.meta_path.exists():
-                meta = json.loads(self.meta_path.read_text())
-                if meta.get("embedding_version") != self.embedding_version:
-                    raise RuntimeError(
-                        f"Embedding store version mismatch: stored "
-                        f"{meta.get('embedding_version')!r} but app is "
-                        f"{self.embedding_version!r}. Re-enroll or clear "
-                        f"{self.vec_path} and {self.meta_path}."
-                    )
             arr = np.load(self.vec_path)
             if arr.ndim == 1:
                 arr = arr.reshape(0, self.dim)
+
+            if self.embedding_version is not None:
+                if self.meta_path.exists():
+                    meta = json.loads(self.meta_path.read_text())
+                    if meta.get("embedding_version") != self.embedding_version:
+                        raise RuntimeError(
+                            f"Embedding store version mismatch: stored "
+                            f"{meta.get('embedding_version')!r} but app is "
+                            f"{self.embedding_version!r}. Re-enroll or clear "
+                            f"{self.vec_path} and {self.meta_path}."
+                        )
+                else:
+                    # vectors.npy exists but meta.json doesn't. Only OK if the store is empty —
+                    # otherwise we'd silently accept enrollments from an unknown earlier model.
+                    if arr.shape[0] > 0:
+                        raise RuntimeError(
+                            f"Embedding store at {self.vec_path} has {arr.shape[0]} vectors "
+                            f"but no {self.meta_path.name} to attest their model version. "
+                            f"This is the drift case the version guard exists to prevent. "
+                            f"Re-enroll, or delete {self.vec_path} to start fresh."
+                        )
+                    # Empty store + no meta → safe to backfill the meta.
+                    self.meta_path.write_text(
+                        json.dumps({"embedding_version": self.embedding_version})
+                    )
         else:
             arr = np.zeros((0, self.dim), dtype=np.float32)
             if self.embedding_version is not None:
@@ -1340,6 +1380,7 @@ tmux new -s arcface
 In tmux:
 ```bash
 cd /root/IT4432E_Project
+mkdir -p training_pipeline/logs
 .venv/bin/python -m training_pipeline.src.train \
     --config training_pipeline/configs/train_arcface.yaml \
     2>&1 | tee training_pipeline/logs/arcface_run.log
@@ -1360,7 +1401,7 @@ Total wall time: ~6–8 hours on H100 80GB.
 
 After training ends, on local:
 ```bash
-mkdir -p training_pipeline/checkpoints
+mkdir -p training_pipeline/checkpoints training_pipeline/logs
 scp root@124.197.18.107:/root/IT4432E_Project/training_pipeline/checkpoints/best_arcface.pt \
     training_pipeline/checkpoints/best_arcface.pt
 scp root@124.197.18.107:/root/IT4432E_Project/training_pipeline/checkpoints/last.pt \
