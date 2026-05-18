@@ -127,6 +127,7 @@ def evaluate_lfw(
     batch_size: int = 128,
     max_pairs: int | None = None,
     strict: bool = True,
+    use_tta: bool = False,
 ) -> dict:
     """Embed all referenced images (with raw fallback), compute cosine sim per pair,
     run 10-fold threshold CV. If `strict`, enforce distribution + threshold sanity.
@@ -159,9 +160,10 @@ def evaluate_lfw(
 
     model.eval()
     embs_list: list[torch.Tensor] = []
+    embed_fn = model.embed_tta if use_tta else model.embed_normalized
     for x in dl:
         x = x.to(device, non_blocking=True)
-        embs_list.append(model.embed_normalized(x).cpu())
+        embs_list.append(embed_fn(x).cpu())
     embs = torch.cat(embs_list, dim=0)
 
     sims = np.array([

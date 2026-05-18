@@ -123,3 +123,47 @@ def test_threshold_at_lower_bound_fires():
 def test_threshold_at_upper_bound_fires():
     with pytest.raises(AssertionError, match="THRESHOLD AT BOUND"):
         _assert_threshold_sane(_metrics(threshold=0.95))
+
+
+def test_evaluate_lfw_use_tta_calls_embed_tta(monkeypatch, tmp_path):
+    """use_tta=True must dispatch to model.embed_tta instead of embed_normalized."""
+    import torch
+    from training_pipeline.src.eval_lfw import evaluate_lfw, LfwPair
+
+    calls = {"embed_normalized": 0, "embed_tta": 0}
+
+    class _SpyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = torch.nn.Linear(3 * 160 * 160, 4)
+        def embed_normalized(self, x):
+            calls["embed_normalized"] += 1
+            return torch.nn.functional.normalize(self.fc(x.flatten(1)), dim=1)
+        def embed_tta(self, x):
+            calls["embed_tta"] += 1
+            return torch.nn.functional.normalize(self.fc(x.flatten(1)), dim=1)
+
+    # Stub pair list with the dataset wrapper missing → use raw fallback for everything.
+    # Easiest: monkeypatch loader to return a deterministic tensor per pair.
+    # See existing test pattern in this file for how to build a 2-pair fixture.
+    pairs = [
+        LfwPair(name1="A", idx1=1, name2="A", idx2=2, same=True),
+        LfwPair(name1="A", idx1=1, name2="B", idx2=1, same=False),
+    ]
+
+    class _StubDataset:
+        def __init__(self, *_a, **_k): pass
+        def __len__(self): return 3
+        def __getitem__(self, i): return torch.zeros(3, 160, 160)
+
+    from training_pipeline.src import eval_lfw as ev
+    monkeypatch.setattr(ev, "_PairImgDataset", _StubDataset)
+
+    model = _SpyModel().eval()
+    evaluate_lfw(
+        model, pairs,
+        aligned_root=tmp_path, raw_root=tmp_path,
+        device="cpu", strict=False, use_tta=True,
+    )
+    assert calls["embed_tta"] >= 1
+    assert calls["embed_normalized"] == 0
