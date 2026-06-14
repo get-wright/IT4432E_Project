@@ -2,6 +2,8 @@
 
 This document covers the **IResNet50 + AdaFace** model that is deployed in the app (`application/models/best.pt`). This is the model actually trained for the project — see `training-overview.md` for the earlier two-phase CE+triplet baseline that it replaced.
 
+**Download the pre-trained checkpoint (≈167 MB):** https://drive.google.com/file/d/1SMPbpQ60rQEJeNORMB5q4jn_7u6zU8-I/view?usp=sharing — place it at `application/models/best.pt` (or run `gdown 1SMPbpQ60rQEJeNORMB5q4jn_7u6zU8-I -O application/models/best.pt`).
+
 ---
 
 ## Architecture

@@ -115,7 +115,24 @@ The script saves `ckpt/last.pt` (full training state: model, head, optimizer, sc
 
 ## Running the app
 
-The trained checkpoint lives at `application/models/best.pt` (gitignored — copy from `ckpt/embedder.pt`).
+The trained checkpoint lives at `application/models/best.pt` (gitignored). Download the
+pre-trained weights (≈167 MB) from Google Drive:
+
+- **Download:** https://drive.google.com/file/d/1SMPbpQ60rQEJeNORMB5q4jn_7u6zU8-I/view?usp=sharing
+
+Place the downloaded file at `application/models/best.pt`. From the command line:
+
+```bash
+cd IT4432E_Project
+mkdir -p application/models
+# requires: pip install gdown
+gdown 1SMPbpQ60rQEJeNORMB5q4jn_7u6zU8-I -O application/models/best.pt
+```
+
+(Alternatively, if you trained the model yourself, copy `ckpt/embedder.pt` to
+`application/models/best.pt`.)
+
+Then set up the environment and launch:
 
 ```bash
 cd IT4432E_Project
@@ -125,7 +142,10 @@ uv pip install -e ".[dev]"
 uvicorn application.backend.main:app --reload
 ```
 
-Open `http://localhost:8000`. Three tabs:
+> No `uv`? Use the stdlib instead: `python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"`.
+
+Open `http://localhost:8000` (the FastAPI backend serves both the API and the web
+frontend on this single port — there is no separate frontend server). Three tabs:
 
 - **Enroll** — enter a name, capture a face from the webcam, store the embedding.
 - **Verify** — capture a face, find the closest enrolled identity and return the cosine similarity score.
