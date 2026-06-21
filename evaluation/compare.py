@@ -30,8 +30,9 @@ def main() -> None:
     ap.add_argument("--results-dir", default="evaluation/results")
     args = ap.parse_args()
     rdir = Path(args.results_dir)
-    results = [json.loads(p.read_text()) for p in rdir.glob("*.json")
-               if p.name not in {"comparison.json"}]
+    raw = [json.loads(p.read_text()) for p in rdir.glob("*.json")
+           if p.name not in {"comparison.json"}]
+    results = [d for d in raw if "model" in d]
     md, csv = build_comparison(results)
     (rdir / "comparison.md").write_text(md)
     (rdir / "comparison.csv").write_text(csv)
