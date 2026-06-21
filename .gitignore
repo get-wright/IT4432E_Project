@@ -39,3 +39,4 @@ Thumbs.db
 # SDD scratch (controller bookkeeping)
 .superpowers/
 .venv/
+uv.lock
