@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
-CKPT = Path("application/models/best.pt")
+CKPT = Path("application/models/arcface.pt")
 SAMPLE_ROOT = Path("shared/process-data/lfw_pairs")
 
 
@@ -30,7 +30,7 @@ def test_embedding_shape_and_idempotent():
     from application.backend.inference import Embedder
 
     aligner = FaceAligner()
-    embedder = Embedder(CKPT)
+    embedder = Embedder("arcface", CKPT)
     img_bytes = SAMPLE.read_bytes()
     t = aligner.align(img_bytes)
     assert t is not None
@@ -42,38 +42,29 @@ def test_embedding_shape_and_idempotent():
     assert abs(e1.norm().item() - 1.0) < 1e-4
 
 
-def test_embedder_use_tta_calls_embed_tta(tmp_path):
-    """When constructed with use_tta=True, Embedder must use model.embed_tta."""
-    import torch
-    import torch.nn.functional as F
-    from application.backend.inference import Embedder
+# ---------------------------------------------------------------------------
+# Registry-dispatch unit test (no real weights)
+# ---------------------------------------------------------------------------
+import torch
+from application.backend import inference as inf
 
-    calls = {"embed_normalized": 0, "embed_tta": 0}
 
-    class _Spy(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.fc = torch.nn.Linear(3 * 160 * 160, 4)
+def test_embedder_uses_tta_flag(monkeypatch):
+    # Build a fake wrapper recording which path was called.
+    calls = {"normal": 0, "tta": 0}
+
+    class FakeWrapper:
         def embed_normalized(self, x):
-            calls["embed_normalized"] += 1
-            return F.normalize(self.fc(x.flatten(1)), dim=1)
+            calls["normal"] += 1
+            return torch.zeros(x.shape[0], 4)
+
         def embed_tta(self, x):
-            calls["embed_tta"] += 1
-            return F.normalize(self.fc(x.flatten(1)), dim=1)
+            calls["tta"] += 1
+            return torch.zeros(x.shape[0], 4)
 
-    ckpt = tmp_path / "tiny.pt"
-    spy = _Spy()
-    torch.save({"model": spy.state_dict(), "cfg": {"train": {"embedding_dim": 4}}}, ckpt)
-
-    # Patch Embedder's model construction to return our spy instead of FaceEmbedding.
-    import application.backend.inference as inf
-    real_model_cls = inf.FaceEmbedding
-    inf.FaceEmbedding = lambda **kw: spy
-    try:
-        emb = Embedder(ckpt, device="cpu", use_tta=True)
-        out = emb.embed(torch.zeros(3, 160, 160))
-        assert out.shape == (4,)
-        assert calls["embed_tta"] == 1
-        assert calls["embed_normalized"] == 0
-    finally:
-        inf.FaceEmbedding = real_model_cls
+    e = inf.Embedder.__new__(inf.Embedder)   # bypass __init__/checkpoint load
+    e.device = "cpu"
+    e.model = FakeWrapper()
+    e.use_tta = True
+    e.embed(torch.zeros(3, 8, 8))
+    assert calls == {"normal": 0, "tta": 1}
