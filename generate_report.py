@@ -45,6 +45,21 @@ def bullet(doc, text, bold_prefix=None):
     set_font(r)
     return p
 
+FIG_DIR = "/home/user/IT4432E_Project/report_figs"
+
+def figure(doc, filename, caption, width_cm=15.5):
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run()
+    run.add_picture(f"{FIG_DIR}/{filename}", width=Cm(width_cm))
+    cap = doc.add_paragraph()
+    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    cr = cap.add_run(caption)
+    cr.italic = True
+    cr.font.size = Pt(9)
+    cr.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+    return p
+
 def add_table(doc, headers, rows, col_widths=None):
     t = doc.add_table(rows=1 + len(rows), cols=len(headers))
     t.style = "Table Grid"
@@ -261,6 +276,10 @@ add_table(doc,
     col_widths=[4, 5, 6]
 )
 doc.add_paragraph()
+figure(doc, "fig4_training_curve.png",
+       "Figure 1. Training loss (red) falls from ~3.2 to ~0.4 while LFW accuracy (blue) climbs "
+       "from ~78% to ~99% over 30 epochs. Dotted lines mark the MultiStep LR decays at epochs 16, 24, 28.")
+doc.add_paragraph()
 body(doc, (
     "LFW was probed every 2 epochs using raw deepfunneled images (no MTCNN alignment needed "
     "during training). The formal 10-fold evaluation used InsightFace pre-aligned .bin files "
@@ -323,6 +342,10 @@ body(doc, (
     "and it is the primary reason the AdaFace model (99.3% LFW) outperforms the "
     "earlier CE+triplet baseline (90.9% LFW) by ~8.4 percentage points."
 ))
+doc.add_paragraph()
+figure(doc, "fig6_baseline_vs_adaface.png",
+       "Figure 2. LFW accuracy of the earlier CE+triplet baseline vs the IResNet50 + AdaFace "
+       "model — an +8.4 percentage-point improvement.", width_cm=11)
 
 doc.add_paragraph()
 
@@ -425,6 +448,10 @@ add_table(doc,
     ],
     col_widths=[6, 5, 5]
 )
+doc.add_paragraph()
+figure(doc, "fig3_lfw_confusion.png",
+       "Figure 3. LFW confusion matrix at τ = 0.237. Only 11 false positives and 26 false "
+       "negatives out of 6,000 pairs.", width_cm=10)
 
 doc.add_paragraph()
 
@@ -444,6 +471,20 @@ add_table(doc,
     col_widths=[2.5, 5.5, 2.5, 2, 2.5, 2.5, 2, 2.5]
 )
 
+doc.add_paragraph()
+figure(doc, "fig1_benchmark_accuracy.png",
+       "Figure 4. Verification accuracy across all 8 benchmarks (10-fold CV, error bars = ±std). "
+       "Green ≥ 97%, blue ≥ 92%, orange = profile/pose, red = adversarial failure (TALFW).")
+doc.add_paragraph()
+figure(doc, "fig2_metrics_grouped.png",
+       "Figure 5. Accuracy, Precision, Recall, and F1 side-by-side per benchmark (adversarial "
+       "TALFW excluded). Precision consistently exceeds recall — the model is conservative, "
+       "favouring false rejects over false accepts.")
+doc.add_paragraph()
+figure(doc, "fig5_pos_neg_spread.png",
+       "Figure 6. Mean cosine similarity of positive vs negative pairs. The spread Δ measures "
+       "how separable the embedding space is — it collapses to negative on TALFW, explaining the "
+       "adversarial failure.")
 doc.add_paragraph()
 body(doc, (
     "All metrics derived from 10-fold cross-validation on InsightFace pre-aligned 112×112 .bin "
