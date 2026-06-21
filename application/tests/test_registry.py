@@ -42,3 +42,19 @@ def test_build_adaface_strict_load_rejects_wrong_keys():
                       "not.a.real.key": torch.zeros(1)}}
     with pytest.raises(RuntimeError):
         REGISTRY["adaface"].builder(ckpt)
+
+
+def test_build_facenet_tolerates_vggface2_logits_head():
+    # Real FaceNet checkpoints trained with classify=True carry a VGGFace2
+    # classifier head (bb.logits.weight/bias) that is discarded at inference.
+    # The builder must strip those keys and still strict-load the embedding
+    # backbone. Regression: previously crashed with "Unexpected key(s) bb.logits.*".
+    from facenet_pytorch import InceptionResnetV1
+    bb = InceptionResnetV1(pretrained=None, classify=False)
+    sd = {f"bb.{k}": v for k, v in bb.state_dict().items()}
+    sd["bb.logits.weight"] = torch.zeros(8631, 512)  # VGGFace2 head, discarded
+    sd["bb.logits.bias"] = torch.zeros(8631)
+    model = REGISTRY["facenet"].builder({"model_state_dict": sd})
+    with torch.no_grad():
+        out = model(torch.zeros(1, 3, 160, 160))
+    assert out.shape[1] == 512
