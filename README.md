@@ -20,17 +20,17 @@ For a deeper walk-through of why the training is structured this way — includi
 
 ## Layout
 
-- `preprocess-data/` — raw Kaggle datasets (gitignored) and a sanity-check script
-- `process-data/` — MTCNN alignment script, output manifest, and an analysis notebook
-- `training_pipeline/` — model, loss, sampler, training entry, results notebook, unit tests
-- `evaluation/` — LFW 10-fold benchmark CLI, results JSON, report notebook, figures
-- `application/` — FastAPI backend, vanilla-JS webcam frontend, integration tests, Dockerfile
-- `infra/` — VM setup and training launch scripts
-- `docs/superpowers/` — design spec and implementation plan
+- `shared/preprocess-data/` — raw Kaggle datasets (gitignored) and a sanity-check script
+- `shared/process-data/` — MTCNN alignment output (manifest, aligned images)
+- `shared/infra/` — VM setup and training launch scripts
+- `models/arcface/`, `models/adaface/`, `models/facenet/` — per-model training code
+- `evaluation/` — multi-model LFW benchmark CLI, comparison aggregator
+- `application/` — FastAPI backend, vanilla-JS webcam frontend, integration tests
+- `docs/` — training overview and cross-dataset eval notes
 
 ## Running the app
 
-The trained checkpoint lives at `application/models/best.pt`.
+Drop trained checkpoints into `application/models/` named `arcface.pt`, `adaface.pt`, or `facenet.pth`.
 
 ```bash
 uv venv --python 3.11 .venv
@@ -39,7 +39,7 @@ uv pip install -e ".[dev]"
 uvicorn application.backend.main:app --reload
 ```
 
-Open `http://localhost:8000`, grant camera permission. The page has three tabs: Enroll (name + capture), Verify (capture → best match + cosine similarity), Enrolled (list / delete). Threshold defaults to 0.5; override with `APP_THRESHOLD`.
+Open `http://localhost:8000`, grant camera permission. The page has three tabs: Enroll (name + capture), Verify (capture → best match + cosine similarity), Enrolled (list / delete). Threshold defaults are per-model; override with `APP_THRESHOLD_<NAME>` (e.g. `APP_THRESHOLD_ARCFACE=0.6`).
 
 API: `POST /enroll`, `POST /verify`, `GET /enrolled`, `DELETE /enrolled/{id}`. Both `enroll` and `verify` accept `{image: <base64 jpeg>}`; `enroll` additionally takes `name`. The model is loaded once at startup and runs on CPU.
 
@@ -69,9 +69,9 @@ AdamW with split learning rates (backbone 1e-4, head 5e-4), cosine schedule with
 
 Reproducing training:
 ```bash
-bash infra/setup_vm.sh         # installs PyTorch + downloads datasets
-bash infra/run_training.sh     # ~25 min on H100 (3 warmup + 17 triplet epochs)
-python -m evaluation.eval_lfw  # 10-fold benchmark, writes evaluation/results.json
+bash shared/infra/setup_vm.sh         # installs PyTorch + downloads datasets
+bash shared/infra/run_training.sh     # ~25 min on H100 (3 warmup + 17 triplet epochs)
+python -m evaluation.evaluate --model arcface --pairs <pairs.txt> --aligned-root <dir>
 ```
 
 ## Notes from the build

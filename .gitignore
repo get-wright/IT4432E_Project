@@ -9,14 +9,14 @@ venv/
 *.egg-info/
 
 # Data (large, downloaded at runtime)
-preprocess-data/casia-webface/
-preprocess-data/celeba/
-preprocess-data/lfw/
-process-data/train/
-process-data/val/
-process-data/lfw_pairs/
-process-data/manifest.parquet
-process-data/alignment_failures.csv
+shared/preprocess-data/casia-webface/
+shared/preprocess-data/celeba/
+shared/preprocess-data/lfw/
+shared/process-data/train/
+shared/process-data/val/
+shared/process-data/lfw_pairs/
+shared/process-data/manifest.parquet
+shared/process-data/alignment_failures.csv
 
 # Training artifacts
 models/*/checkpoints/
