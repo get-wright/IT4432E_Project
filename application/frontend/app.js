@@ -6,6 +6,26 @@ const thresholdInput   = document.getElementById('threshold');
 const thresholdReadout = document.getElementById('threshold-readout');
 let lastVerify = null;  // last /verify response, kept for live re-render
 
+const modelSelect = document.getElementById('model-select');
+const currentModel = () => modelSelect.value;
+
+async function loadModels() {
+  const res = await fetch('/models');
+  const models = await res.json();
+  modelSelect.innerHTML = '';
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m.name;
+    opt.textContent = m.available ? m.name : `${m.name} (unavailable)`;
+    opt.disabled = !m.available;
+    modelSelect.appendChild(opt);
+  }
+  const firstAvail = models.find((m) => m.available);
+  if (firstAvail) modelSelect.value = firstAvail.name;
+}
+loadModels();
+modelSelect.addEventListener('change', loadList);
+
 const currentThreshold = () => {
   const v = parseFloat(thresholdReadout.value);
   return Number.isFinite(v) ? v : parseFloat(thresholdInput.value);
@@ -119,7 +139,7 @@ document.getElementById('enroll-btn').addEventListener('click', async () => {
     const r = await fetch('/enroll', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, image: snapBase64() }),
+      body: JSON.stringify({ name, image: snapBase64(), model: currentModel() }),
     });
     const j = await r.json();
     if (r.ok) {
@@ -150,7 +170,7 @@ document.getElementById('verify-btn').addEventListener('click', async () => {
     const r = await fetch('/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: snapBase64() }),
+      body: JSON.stringify({ image: snapBase64(), model: currentModel() }),
     });
     const j = await r.json();
     if (!r.ok) {
@@ -221,7 +241,7 @@ async function loadList() {
   const ul = document.getElementById('enrolled-list');
   ul.innerHTML = `<li class="li-empty">Loading registry…</li>`;
   try {
-    const r = await fetch('/enrolled');
+    const r = await fetch('/enrolled?model=' + encodeURIComponent(currentModel()));
     const items = await r.json();
     if (!Array.isArray(items) || items.length === 0) {
       ul.innerHTML = `<li class="li-empty">No identities enrolled yet.</li>`;
@@ -235,7 +255,7 @@ async function loadList() {
         <span class="li-name">${escapeHtml(it.name)}</span>
         <button data-id="${it.id}" aria-label="Delete ${escapeHtml(it.name)}">Delete</button>`;
       li.querySelector('button').addEventListener('click', async () => {
-        await fetch(`/enrolled/${it.id}`, { method: 'DELETE' });
+        await fetch(`/enrolled/${it.id}?model=` + encodeURIComponent(currentModel()), { method: 'DELETE' });
         loadList();
       });
       ul.appendChild(li);
