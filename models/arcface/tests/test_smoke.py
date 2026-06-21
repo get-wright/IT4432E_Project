@@ -64,10 +64,10 @@ class _TinyEmbed(nn.Module):
 def test_arcface_smoke_no_collapse(synthetic_manifest, monkeypatch, tmp_path):
     workdir, manifest = synthetic_manifest
 
-    import training_pipeline.src.dataset as ds_mod
+    import models.arcface.dataset as ds_mod
     monkeypatch.setattr(ds_mod, "ROOT", workdir)
 
-    import training_pipeline.src.train as train_mod
+    import models.arcface.train as train_mod
 
     def _stub_probe(*args, **kwargs):
         return {"mean_acc": 0.55, "spread": 0.12, "pos_sim_mean": 0.6, "neg_sim_mean": 0.48}
@@ -76,7 +76,7 @@ def test_arcface_smoke_no_collapse(synthetic_manifest, monkeypatch, tmp_path):
     monkeypatch.setattr(train_mod, "load_pairs_txt", lambda p: [])
     monkeypatch.setattr(train_mod, "find_lfw_identity_root", lambda p: tmp_path)
 
-    from training_pipeline.src import model as model_mod
+    from models.arcface import model as model_mod
     monkeypatch.setattr(model_mod, "FaceEmbedding", _TinyEmbed)
     monkeypatch.setattr(train_mod, "FaceEmbedding", _TinyEmbed)
 

@@ -21,9 +21,9 @@ from torch.utils.data import DataLoader, Dataset
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from training_pipeline.src.dataset import eval_transform  # noqa: E402
-from training_pipeline.src.eval_lfw import _assert_distribution_sane  # noqa: E402
-from training_pipeline.src.model import FaceEmbedding  # noqa: E402
+from models.arcface.dataset import eval_transform  # noqa: E402
+from models.arcface.eval_lfw import _assert_distribution_sane  # noqa: E402
+from models.arcface.model import FaceEmbedding  # noqa: E402
 
 N_POS = 1500
 N_NEG = 1500
@@ -76,7 +76,7 @@ class _PinsDataset(Dataset):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pins-root",
-                    default=ROOT / "preprocess-data/pins/105_classes_pins_dataset")
+                    default=ROOT / "preshared/process-data/pins/105_classes_pins_dataset")
     ap.add_argument("--checkpoint", default=ROOT / "application/models/best.pt")
     ap.add_argument("--lfw-results", default=ROOT / "evaluation/results.json")
     ap.add_argument("--out", default=ROOT / "evaluation/results_pins.json")

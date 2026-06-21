@@ -20,7 +20,7 @@ def _img_b64(path: Path) -> str:
 
 
 def _first_lfw_sample() -> Path | None:
-    root = Path("process-data/lfw_pairs")
+    root = Path("shared/process-data/lfw_pairs")
     if not root.exists():
         return None
     for p in root.rglob("*.jpg"):

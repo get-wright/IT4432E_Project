@@ -3,9 +3,10 @@ from pathlib import Path
 
 import pytest
 
-# process-data has a hyphen so we have to add it to sys.path explicitly.
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "process-data"))
+# shared/process-data has a hyphen so we have to add it to sys.path explicitly.
+# File is now at models/arcface/tests/ — need parents[3] to reach project root.
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "shared/process-data"))
 
 from lfw_layout import find_lfw_identity_root  # noqa: E402
 

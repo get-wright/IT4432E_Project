@@ -7,7 +7,7 @@ import pytest
 import torch
 
 CKPT = Path("application/models/best.pt")
-SAMPLE_ROOT = Path("process-data/lfw_pairs")
+SAMPLE_ROOT = Path("shared/process-data/lfw_pairs")
 
 
 def _first_sample() -> Path | None:

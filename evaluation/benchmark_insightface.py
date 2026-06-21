@@ -15,8 +15,8 @@ import numpy as np
 import torch
 from PIL import Image
 
-from training_pipeline.src.dataset import eval_transform
-from training_pipeline.src.model import FaceEmbedding
+from models.arcface.dataset import eval_transform
+from models.arcface.model import FaceEmbedding
 
 BENCH_NAMES = ["lfw", "agedb_30", "cfp_ff", "cfp_fp", "cplfw", "calfw", "sllfw", "talfw"]
 LFW_TUNED_THRESHOLD = 0.565
@@ -99,7 +99,7 @@ def _run_one(model: FaceEmbedding, bin_path: Path, device: str, use_tta: bool) -
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True, type=Path)
-    ap.add_argument("--bins-root", type=Path, default=Path("preprocess-data/insightface_bins"),
+    ap.add_argument("--bins-root", type=Path, default=Path("preshared/process-data/insightface_bins"),
                     help="Directory containing <name>.bin files for each benchmark")
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

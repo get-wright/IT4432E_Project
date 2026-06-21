@@ -20,7 +20,7 @@ from .model import ClassifierHead, FaceEmbedding
 from .utils import AverageMeter, set_seed
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "process-data"))
+sys.path.insert(0, str(ROOT / "shared/process-data"))
 from lfw_layout import find_lfw_identity_root  # noqa: E402
 
 
@@ -77,8 +77,8 @@ def run_training(cfg: dict) -> dict:
 
     # LFW probe inputs (shared across both phases).
     pairs = load_pairs_txt(Path(cfg["eval"]["pairs_txt"]))
-    aligned_root = ROOT / "process-data/lfw_pairs"
-    raw_root = find_lfw_identity_root(ROOT / "preprocess-data/lfw")
+    aligned_root = ROOT / "shared/process-data/lfw_pairs"
+    raw_root = find_lfw_identity_root(ROOT / "preshared/process-data/lfw")
 
     model = FaceEmbedding(embedding_dim=cfg["train"]["embedding_dim"]).to(device)
     classifier = ClassifierHead(cfg["train"]["embedding_dim"], n_identities).to(device)

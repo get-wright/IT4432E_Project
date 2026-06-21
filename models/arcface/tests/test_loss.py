@@ -1,7 +1,7 @@
 import math
 
 import torch
-from training_pipeline.src.loss import batch_hard_triplet_loss, semi_hard_triplet_loss, softplus_loss
+from models.arcface.loss import batch_hard_triplet_loss, semi_hard_triplet_loss, softplus_loss
 
 
 def test_loss_zero_when_anchor_equals_positive_and_far_from_neg():

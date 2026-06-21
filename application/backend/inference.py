@@ -5,7 +5,7 @@ from pathlib import Path
 
 import torch
 
-from training_pipeline.src.model import FaceEmbedding
+from models.arcface.model import FaceEmbedding
 
 
 class Embedder:
