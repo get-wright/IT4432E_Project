@@ -1,5 +1,5 @@
 from collections import Counter
-from training_pipeline.src.dataset import PKSampler
+from models.arcface.dataset import PKSampler
 
 
 def test_pk_sampler_yields_pk_batch_with_p_unique_ids():
@@ -28,7 +28,7 @@ def test_pk_sampler_skips_labels_with_too_few_samples():
 
 def test_train_transform_has_no_random_erasing():
     from torchvision import transforms
-    from training_pipeline.src.dataset import train_transform
+    from models.arcface.dataset import train_transform
 
     tf = train_transform()
     assert isinstance(tf, transforms.Compose)

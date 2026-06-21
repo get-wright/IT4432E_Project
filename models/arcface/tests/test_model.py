@@ -1,5 +1,5 @@
 import torch
-from training_pipeline.src.model import FaceEmbedding, ClassifierHead
+from models.arcface.model import FaceEmbedding, ClassifierHead
 
 
 def test_embedding_shape_and_norm():
@@ -63,7 +63,7 @@ def test_embed_tta_unit_norm_and_flip_consistency():
     """embed_tta returns unit-norm and is permutation-invariant to flipping the input."""
     import torch
     import torch.nn.functional as F
-    from training_pipeline.src.model import FaceEmbedding
+    from models.arcface.model import FaceEmbedding
 
     torch.manual_seed(0)
     model = FaceEmbedding(embedding_dim=32, pretrained=False).eval()

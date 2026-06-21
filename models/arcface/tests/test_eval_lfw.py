@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from training_pipeline.src.eval_lfw import (
+from models.arcface.eval_lfw import (
     LfwPair,
     _load_image_with_fallback,
     load_pairs_txt,
@@ -74,7 +74,7 @@ def test_load_image_with_fallback_raises_when_both_missing(tmp_path):
         _load_image_with_fallback(aligned, raw)
 
 
-from training_pipeline.src.eval_lfw import (
+from models.arcface.eval_lfw import (
     _assert_distribution_sane,
     _assert_threshold_sane,
 )
@@ -128,7 +128,7 @@ def test_threshold_at_upper_bound_fires():
 def test_evaluate_lfw_use_tta_calls_embed_tta(monkeypatch, tmp_path):
     """use_tta=True must dispatch to model.embed_tta instead of embed_normalized."""
     import torch
-    from training_pipeline.src.eval_lfw import evaluate_lfw, LfwPair
+    from models.arcface.eval_lfw import evaluate_lfw, LfwPair
 
     calls = {"embed_normalized": 0, "embed_tta": 0}
 
@@ -156,7 +156,7 @@ def test_evaluate_lfw_use_tta_calls_embed_tta(monkeypatch, tmp_path):
         def __len__(self): return 3
         def __getitem__(self, i): return torch.zeros(3, 160, 160)
 
-    from training_pipeline.src import eval_lfw as ev
+    from models.arcface import eval_lfw as ev
     monkeypatch.setattr(ev, "_PairImgDataset", _StubDataset)
 
     model = _SpyModel().eval()

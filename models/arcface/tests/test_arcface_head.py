@@ -7,7 +7,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from training_pipeline.src.arcface_head import ArcFaceHead
+from models.arcface.arcface_head import ArcFaceHead
 
 
 @pytest.fixture
