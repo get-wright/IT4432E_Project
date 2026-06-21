@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -19,7 +20,14 @@ from .registry import REGISTRY
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = ROOT / "application" / "frontend"
 
-app = FastAPI(title="Face Recognition")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _reset_for_tests()
+    yield
+
+
+app = FastAPI(title="Face Recognition", lifespan=lifespan)
 
 # name -> {"embedder", "aligner", "db", "threshold"} for available models only
 _loaded: dict[str, dict] = {}
@@ -67,11 +75,6 @@ def _reset_for_tests() -> None:
     # Resolve default: explicit env if loaded, else first loaded model, else None.
     want = cfg["default_model"]
     _default_model = want if want in _loaded else (next(iter(_loaded), None))
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    _reset_for_tests()
 
 
 class EnrollReq(BaseModel):
