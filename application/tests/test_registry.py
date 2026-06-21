@@ -22,3 +22,23 @@ def test_build_facenet_strict_load_rejects_wrong_keys():
     # not earlier on a non-tensor value.
     with pytest.raises(RuntimeError):
         REGISTRY["facenet"].builder({"model_state_dict": {"not.a.real.key": torch.zeros(1)}})
+
+
+def test_build_arcface_strict_load_rejects_wrong_keys():
+    # cfg supplies embedding_dim for construction; the wrong-key model dict
+    # must then fail on strict key validation.
+    ckpt = {"cfg": {"train": {"embedding_dim": 512}},
+            "model": {"not.a.real.key": torch.zeros(1)}}
+    with pytest.raises(RuntimeError):
+        REGISTRY["arcface"].builder(ckpt)
+
+
+def test_build_adaface_strict_load_rejects_wrong_keys():
+    # fc.weight must exist with a real shape: dim is inferred from shape[0]
+    # BEFORE the load, so it has to be present (else KeyError, not RuntimeError).
+    # With a 512-d fc.weight the model builds, then the extra wrong key trips
+    # strict=True with a RuntimeError.
+    ckpt = {"model": {"fc.weight": torch.zeros(512, 512),
+                      "not.a.real.key": torch.zeros(1)}}
+    with pytest.raises(RuntimeError):
+        REGISTRY["adaface"].builder(ckpt)
