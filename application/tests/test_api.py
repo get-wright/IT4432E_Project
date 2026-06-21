@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("APP_MODELS_DIR", str(tmp_path))  # no checkpoints → all unavailable
     from application.backend import main as app_main
     app_main._reset_for_tests()
     return TestClient(app_main.app)
@@ -30,10 +31,16 @@ def _first_lfw_sample() -> Path | None:
 def test_models_endpoint_lists_all_registry_entries(client):
     r = client.get("/models")
     assert r.status_code == 200
-    names = {m["name"] for m in r.json()}
+    entries = r.json()
+    names = {m["name"] for m in entries}
     assert names == {"arcface", "adaface", "facenet"}
     # No checkpoints present in tmp env → all unavailable, none crash.
-    assert all(m["available"] is False for m in r.json())
+    assert all(m["available"] is False for m in entries)
+    # Full contract: every entry carries threshold + is_default; unavailable → reason set.
+    for m in entries:
+        assert "threshold" in m
+        assert "is_default" in m
+        assert m["reason"] == "checkpoint missing"
 
 
 def test_verify_unavailable_model_returns_503(client):
