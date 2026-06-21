@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from application.backend.registry import REGISTRY
 
 CKPT = Path("application/models/arcface.pt")
 SAMPLE_ROOT = Path("shared/process-data/lfw_pairs")
@@ -29,7 +30,8 @@ def test_embedding_shape_and_idempotent():
     from application.backend.face_align import FaceAligner
     from application.backend.inference import Embedder
 
-    aligner = FaceAligner()
+    spec = REGISTRY["arcface"]
+    aligner = FaceAligner(spec.input_size, spec.mean, spec.std)
     embedder = Embedder("arcface", CKPT)
     img_bytes = SAMPLE.read_bytes()
     t = aligner.align(img_bytes)
@@ -45,11 +47,10 @@ def test_embedding_shape_and_idempotent():
 # ---------------------------------------------------------------------------
 # Registry-dispatch unit test (no real weights)
 # ---------------------------------------------------------------------------
-import torch
 from application.backend import inference as inf
 
 
-def test_embedder_uses_tta_flag(monkeypatch):
+def test_embedder_uses_tta_flag():
     # Build a fake wrapper recording which path was called.
     calls = {"normal": 0, "tta": 0}
 
