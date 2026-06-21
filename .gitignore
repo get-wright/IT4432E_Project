@@ -35,3 +35,7 @@ application/models/
 # OS
 .DS_Store
 Thumbs.db
+
+# SDD scratch (controller bookkeeping)
+.superpowers/
+.venv/
