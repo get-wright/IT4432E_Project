@@ -8,10 +8,21 @@ let lastVerify = null;  // last /verify response, kept for live re-render
 
 const modelSelect = document.getElementById('model-select');
 const currentModel = () => modelSelect.value;
+let modelsCache = [];
+
+function seedThreshold(name) {
+  const m = modelsCache.find((x) => x.name === name);
+  if (m && typeof m.threshold === 'number') {
+    thresholdInput.value = m.threshold;
+    thresholdReadout.value = m.threshold.toFixed(3);
+    if (lastVerify) renderScore(lastVerify);
+  }
+}
 
 async function loadModels() {
   const res = await fetch('/models');
   const models = await res.json();
+  modelsCache = models;
   modelSelect.innerHTML = '';
   for (const m of models) {
     const opt = document.createElement('option');
@@ -20,11 +31,14 @@ async function loadModels() {
     opt.disabled = !m.available;
     modelSelect.appendChild(opt);
   }
-  const firstAvail = models.find((m) => m.available);
-  if (firstAvail) modelSelect.value = firstAvail.name;
+  const initial = models.find((m) => m.available && m.is_default) ?? models.find((m) => m.available);
+  if (initial) {
+    modelSelect.value = initial.name;
+    seedThreshold(currentModel());
+  }
 }
 loadModels();
-modelSelect.addEventListener('change', loadList);
+modelSelect.addEventListener('change', () => { seedThreshold(currentModel()); loadList(); });
 
 const currentThreshold = () => {
   const v = parseFloat(thresholdReadout.value);
