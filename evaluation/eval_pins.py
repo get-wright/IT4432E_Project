@@ -76,7 +76,7 @@ class _PinsDataset(Dataset):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pins-root",
-                    default=ROOT / "preshared/process-data/pins/105_classes_pins_dataset")
+                    default=ROOT / "shared/preprocess-data/pins/105_classes_pins_dataset")
     ap.add_argument("--checkpoint", default=ROOT / "application/models/best.pt")
     ap.add_argument("--lfw-results", default=ROOT / "evaluation/results.json")
     ap.add_argument("--out", default=ROOT / "evaluation/results_pins.json")

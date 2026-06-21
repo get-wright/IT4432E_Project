@@ -99,7 +99,7 @@ def _run_one(model: FaceEmbedding, bin_path: Path, device: str, use_tta: bool) -
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True, type=Path)
-    ap.add_argument("--bins-root", type=Path, default=Path("preshared/process-data/insightface_bins"),
+    ap.add_argument("--bins-root", type=Path, default=Path("shared/preprocess-data/insightface_bins"),
                     help="Directory containing <name>.bin files for each benchmark")
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

@@ -23,17 +23,17 @@ from models.arcface.model import FaceEmbedding  # noqa: E402
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default=ROOT / "application/models/best.pt")
-    ap.add_argument("--pairs", default=ROOT / "preshared/process-data/lfw/pairs.txt")
+    ap.add_argument("--pairs", default=ROOT / "shared/preprocess-data/lfw/pairs.txt")
     ap.add_argument("--aligned-root", default=ROOT / "shared/process-data/lfw_pairs")
     ap.add_argument("--raw-root", default=None,
-                    help="Override raw LFW root; default = auto-discover under preshared/process-data/lfw")
+                    help="Override raw LFW root; default = auto-discover under shared/preprocess-data/lfw")
     ap.add_argument("--out", default=ROOT / "evaluation/results.json")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--tta", action="store_true",
                     help="Use flip-averaged TTA at embed time")
     args = ap.parse_args()
 
-    raw_root = Path(args.raw_root) if args.raw_root else find_lfw_identity_root(ROOT / "preshared/process-data/lfw")
+    raw_root = Path(args.raw_root) if args.raw_root else find_lfw_identity_root(ROOT / "shared/preprocess-data/lfw")
 
     ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
     model = FaceEmbedding(embedding_dim=ckpt["cfg"]["train"]["embedding_dim"], pretrained=False)

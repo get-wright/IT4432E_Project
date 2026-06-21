@@ -78,7 +78,7 @@ def run_training(cfg: dict) -> dict:
     # LFW probe inputs (shared across both phases).
     pairs = load_pairs_txt(Path(cfg["eval"]["pairs_txt"]))
     aligned_root = ROOT / "shared/process-data/lfw_pairs"
-    raw_root = find_lfw_identity_root(ROOT / "preshared/process-data/lfw")
+    raw_root = find_lfw_identity_root(ROOT / "shared/preprocess-data/lfw")
 
     model = FaceEmbedding(embedding_dim=cfg["train"]["embedding_dim"]).to(device)
     classifier = ClassifierHead(cfg["train"]["embedding_dim"], n_identities).to(device)
