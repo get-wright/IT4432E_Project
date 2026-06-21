@@ -14,7 +14,7 @@ Pipeline: CASIA-WebFace → MTCNN alignment → ResNet50 + 512-d embedding head 
 | Pins (105 celebs, disjoint from CASIA + LFW) | accuracy at fixed LFW threshold | **77.7%** |
 | Pins | spread | 0.376 |
 
-Pins identities are disjoint from both the training data (CASIA) and the eval set (LFW), so this number is a real cross-dataset check — not a re-tuned threshold. Full numbers in `evaluation/results.json` and `evaluation/results_pins.json`.
+Pins identities are disjoint from both the training data (CASIA) and the eval set (LFW), so this number is a real cross-dataset check — not a re-tuned threshold. Full numbers in `evaluation/results.json`.
 
 For a deeper walk-through of why the training is structured this way — including the bug it replaced — see [`docs/training-overview.md`](docs/training-overview.md).
 
@@ -79,3 +79,37 @@ python -m evaluation.eval_lfw  # 10-fold benchmark, writes evaluation/results.js
 - `training-pipeline/` became `training_pipeline/` so Python's import system would accept it.
 - Original infra plan targeted GCP A100. The project's GCP account had global GPU quota fixed at zero and was ineligible for an increase, so training moved to a non-GCP H100 provider. `infra/create_vm.sh` is the GCP path and is unused; `infra/setup_vm.sh` is the generic Ubuntu-22.04-with-NVIDIA-driver path that actually ran.
 - The provider has no auto-stop API. The VM must be shut down manually from the provider dashboard after `best.pt` is pulled, or it will keep billing.
+
+## Models & model selection
+
+Three trained models live side-by-side under `models/`: ArcFace (ResNet50, 160px,
+ImageNet norm), AdaFace (IResNet50, 112px, 0.5 norm), FaceNet (InceptionResnetV1,
+160px, 0.5 norm). They produce non-comparable embeddings, so each has its own
+enrollment store under `application/embeddings/<model>/`.
+
+### Run the app
+Drop checkpoints into `application/models/` named `arcface.pt`, `adaface.pt`,
+`facenet.pth` (gitignored). The app loads whatever is present; missing models show
+as unavailable in the dropdown.
+
+```bash
+uvicorn application.backend.main:app --port 8000
+```
+
+Per-model threshold override: `APP_THRESHOLD_ARCFACE=0.6 uvicorn ...`.
+
+> Security: this app is unauthenticated — it is a local demo. Do not expose it to
+> an untrusted network without adding access control.
+
+### Evaluate (Accuracy / Precision / Recall / F1 / ROC-AUC)
+Needs the checkpoint + LFW pairs/images + a torch environment.
+
+```bash
+python -m evaluation.evaluate --model arcface --pairs <pairs.txt> --aligned-root <dir>
+python -m evaluation.evaluate --model adaface --pairs <pairs.txt> --aligned-root <dir>
+python -m evaluation.evaluate --model facenet --pairs <pairs.txt> --aligned-root <dir>
+python -m evaluation.compare          # writes evaluation/results/comparison.{md,csv}
+```
+
+AdaFace's extended 8-suite InsightFace report is preserved at
+`evaluation/adaface_evaluation.ipynb` (AdaFace-only, not part of the 3-model table).

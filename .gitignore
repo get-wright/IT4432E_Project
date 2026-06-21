@@ -19,13 +19,14 @@ process-data/manifest.parquet
 process-data/alignment_failures.csv
 
 # Training artifacts
-training-pipeline/checkpoints/
-training-pipeline/tensorboard_logs/
-training-pipeline/*.log
+models/*/checkpoints/
+models/*/tensorboard_logs/
+models/*/*.log
 
 # App runtime
 application/embeddings/
-application/models/
+application/models/*.pt
+application/models/*.pth
 
 # Secrets
 **/.kaggle/
