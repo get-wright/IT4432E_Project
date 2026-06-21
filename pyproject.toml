@@ -6,7 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
     "torch>=2.6",
     "torchvision>=0.21",
-    "facenet-pytorch>=2.6",
+    "facenet-pytorch>=2.5.3",  # 2.6 pins torchvision<0.18, incompatible with torchvision>=0.21
     "numpy>=2.0",
     "pandas>=2.2",
     "pyarrow>=18.0",
