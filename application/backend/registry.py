@@ -59,7 +59,12 @@ def build_facenet(ckpt: dict) -> nn.Module:
             return self.bb(x)  # raw embedding; EmbedWrapper normalizes
 
     model = FaceNet()
-    model.load_state_dict(ckpt["model_state_dict"], strict=True)
+    # Real FaceNet checkpoints trained with classify=True carry a VGGFace2
+    # classifier head (bb.logits.*) that is discarded at inference. Drop those
+    # keys, then strict-load the embedding backbone so a genuine mismatch
+    # still fails loud.
+    sd = {k: v for k, v in ckpt["model_state_dict"].items() if not k.startswith("bb.logits.")}
+    model.load_state_dict(sd, strict=True)
     return model.eval()
 
 
