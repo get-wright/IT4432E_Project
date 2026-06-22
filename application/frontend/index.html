@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Face — Recognition Instrument</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=8" />
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <span class="brand-mark">F·R</span>
+      <span class="brand-name">Face Recognition</span>
+    </div>
+      <label class="model-pick">
+        <span class="field-label">Verify model</span>
+        <select id="model-select"></select>
+      </label>
+  </header>
+
+  <main>
+    <section class="viewport" aria-label="Camera viewport">
+      <div class="frame">
+        <video id="cam" autoplay playsinline muted></video>
+        <canvas id="snap" hidden></canvas>
+        <div class="reticle" aria-hidden="true">
+          <span class="corner tl"></span><span class="corner tr"></span>
+          <span class="corner bl"></span><span class="corner br"></span>
+        </div>
+        <div class="viewport-foot">
+          <span class="vp-label">live · 4:3</span>
+          <span class="vp-coord" id="vp-coord">— · —</span>
+        </div>
+      </div>
+    </section>
+
+    <nav class="modes" role="tablist" aria-label="Mode">
+      <button data-tab="enroll" class="mode active" role="tab" aria-selected="true">
+        <span class="mode-index">01</span>
+        <span class="mode-label">Enroll</span>
+      </button>
+      <button data-tab="verify" class="mode" role="tab" aria-selected="false">
+        <span class="mode-index">02</span>
+        <span class="mode-label">Verify</span>
+      </button>
+      <button data-tab="list" class="mode" role="tab" aria-selected="false">
+        <span class="mode-index">03</span>
+        <span class="mode-label">Registry</span>
+      </button>
+    </nav>
+
+    <section id="enroll-section" class="panel" role="tabpanel">
+      <h2 class="panel-title">Enroll a new face</h2>
+      <p class="panel-hint">Capture one frame. Stored as a 512-dimensional embedding, name included.</p>
+      <div class="row">
+        <label class="field">
+          <span class="field-label">Identity</span>
+          <input id="name" type="text" placeholder="Enter name" autocomplete="off" />
+        </label>
+        <button id="enroll-btn" class="capture">
+          <span class="capture-dot" aria-hidden="true"></span>
+          <span>Capture &amp; Enroll</span>
+        </button>
+      </div>
+      <div id="enroll-result" class="result" aria-live="polite"></div>
+    </section>
+
+    <section id="verify-section" class="panel hidden" role="tabpanel">
+      <h2 class="panel-title">Verify against registry</h2>
+      <p class="panel-hint">Capture a frame. The closest enrolled embedding wins if cosine similarity clears the threshold.</p>
+      <div class="row">
+        <button id="verify-btn" class="capture">
+          <span class="capture-dot" aria-hidden="true"></span>
+          <span>Capture &amp; Verify</span>
+        </button>
+        <div class="threshold-control">
+          <label class="field-label" for="threshold">
+            Threshold τ ·
+            <input id="threshold-readout" type="number" min="0.00" max="1.00" step="0.005" value="0.565" />
+          </label>
+          <input id="threshold" type="range" min="0.30" max="0.90" step="0.005" value="0.565" />
+          <div class="threshold-scale" aria-hidden="true">
+            <span>0.30</span>
+            <span>0.90</span>
+          </div>
+        </div>
+      </div>
+      <div id="verify-result" class="result result-verify" aria-live="polite"></div>
+    </section>
+
+    <section id="list-section" class="panel hidden" role="tabpanel">
+      <h2 class="panel-title">Registry</h2>
+      <p class="panel-hint">Every enrolled face on this device.</p>
+      <div class="row">
+        <button id="refresh-btn" class="ghost">Refresh</button>
+      </div>
+      <ul id="enrolled-list"></ul>
+    </section>
+  </main>
+
+  <script src="/static/app.js?v=10"></script>
+</body>
+</html>

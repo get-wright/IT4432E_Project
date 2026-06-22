@@ -1,0 +1,17 @@
+{
+  "mean_acc": 0.909,
+  "std_acc": 0.010883218478209677,
+  "threshold_global": 0.565,
+  "n_pairs": 6000,
+  "n_pairs_total": 6000,
+  "n_pairs_used": 6000,
+  "n_unique_images": 7701,
+  "n_aligned": 3581,
+  "n_raw_fallback": 4120,
+  "pos_sim_mean": 0.7636424723189945,
+  "pos_sim_std": 0.16660678376053217,
+  "neg_sim_mean": 0.1790994448744847,
+  "neg_sim_std": 0.26470119856118657,
+  "spread": 0.5845430274445098,
+  "pos_ratio": 0.5
+}

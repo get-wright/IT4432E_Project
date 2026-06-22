@@ -1,0 +1,42 @@
+[project]
+name = "face-recognition-siamese"
+version = "0.1.0"
+description = "Face recognition with Siamese network — CASIA/CelebA training, LFW eval, FastAPI app."
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.6",
+    "torchvision>=0.21",
+    "facenet-pytorch>=2.5.3",  # 2.6 pins torchvision<0.18, incompatible with torchvision>=0.21
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "pyarrow>=18.0",
+    "pillow>=11.0",
+    "scikit-learn>=1.5",
+    "matplotlib>=3.9",
+    "tensorboard>=2.18",
+    "tqdm>=4.67",
+    "pyyaml>=6.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.20",
+    "kaggle>=1.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "httpx>=0.28", "ruff>=0.8"]
+
+[tool.pytest.ini_options]
+testpaths = ["models/arcface/tests", "application/tests", "evaluation/tests"]
+asyncio_mode = "auto"
+markers = ["slow: marks tests as slow (deselect with -m 'not slow')"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["models*", "application*"]
+
+[tool.ruff]
+line-length = 100
