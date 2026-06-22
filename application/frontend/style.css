@@ -545,11 +545,27 @@ ul#enrolled-list {
 }
 ul#enrolled-list li {
   display: grid;
-  grid-template-columns: 40px 1fr auto;
+  grid-template-columns: 40px 1fr auto auto;
   align-items: center;
   padding: 16px 0;
   border-bottom: 1px solid var(--paper-line);
   gap: 16px;
+}
+.li-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.li-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border: 1px solid var(--paper-line);
+  color: var(--ink-mute);
+  border-radius: 2px;
 }
 .li-index {
   font-family: var(--mono);

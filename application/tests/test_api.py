@@ -60,24 +60,43 @@ def test_verify_unavailable_model_returns_503(client):
     assert r.status_code == 503
 
 
+def test_enroll_with_no_models_returns_503(client):
+    r = client.post("/enroll", json={"name": "x", "image": ""})
+    assert r.status_code == 503
+
+
+def test_grouped_enrolled_empty_when_no_models(client):
+    r = client.get("/enrolled")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+
 @pytest.mark.skipif(
     not Path("application/models/arcface.pt").exists() or _first_lfw_sample() is None,
     reason="arcface checkpoint or LFW sample missing — run training first",
 )
-def test_enroll_and_verify_end_to_end(real_models_client):
+def test_enroll_all_models_and_verify_end_to_end(real_models_client):
     sample = _first_lfw_sample()
-    r = real_models_client.post("/enroll", json={"name": "test_user", "image": _img_b64(sample), "model": "arcface"})
+    # One capture enrolls into every available model.
+    r = real_models_client.post("/enroll", json={"name": "test_user", "image": _img_b64(sample)})
     assert r.status_code == 200
-    enrolled_id = r.json()["id"]
+    body = r.json()
+    assert body["name"] == "test_user"
+    assert "arcface" in body["enrolled"]  # at least arcface is present
 
+    # Per-model verify still works against arcface's own store.
     r = real_models_client.post("/verify", json={"image": _img_b64(sample), "model": "arcface"})
     assert r.status_code == 200
     assert r.json()["best_match"] == "test_user"
 
-    r = real_models_client.get("/enrolled", params={"model": "arcface"})
-    assert any(e["name"] == "test_user" for e in r.json())
+    # Grouped gallery: one row for the person, listing every model it landed in.
+    r = real_models_client.get("/enrolled")
+    person = next(e for e in r.json() if e["name"] == "test_user")
+    assert set(person["models"]) == set(body["enrolled"])
 
-    r = real_models_client.delete(f"/enrolled/{enrolled_id}", params={"model": "arcface"})
-    assert r.status_code == 200
-    r = real_models_client.get("/enrolled", params={"model": "arcface"})
+    # Delete-by-name clears the person from every store.
+    r = real_models_client.delete("/enrolled/by-name/test_user")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    r = real_models_client.get("/enrolled")
     assert all(e["name"] != "test_user" for e in r.json())

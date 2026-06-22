@@ -38,7 +38,7 @@ async function loadModels() {
   }
 }
 loadModels();
-modelSelect.addEventListener('change', () => { seedThreshold(currentModel()); loadList(); });
+modelSelect.addEventListener('change', () => { seedThreshold(currentModel()); });
 
 const currentThreshold = () => {
   const v = parseFloat(thresholdReadout.value);
@@ -153,16 +153,22 @@ document.getElementById('enroll-btn').addEventListener('click', async () => {
     const r = await fetch('/enroll', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, image: snapBase64(), model: currentModel() }),
+      body: JSON.stringify({ name, image: snapBase64() }),
     });
     const j = await r.json();
     if (r.ok) {
+      const models = Array.isArray(j.enrolled) ? j.enrolled : [];
+      const failed = Array.isArray(j.failed) ? j.failed : [];
+      const failNote = failed.length
+        ? `<span style="color: var(--signal); margin-left:12px;">no face for ${escapeHtml(failed.join(', '))}</span>`
+        : '';
       out.innerHTML = `
-        <div style="display:flex; gap:18px; align-items:baseline;">
+        <div style="display:flex; gap:18px; align-items:baseline; flex-wrap:wrap;">
           <span style="font-family:var(--serif); font-size:24px; font-style:italic; color:var(--ink);">
             ${escapeHtml(j.name)}
           </span>
-          <span style="color: var(--good);">enrolled · id ${j.id ?? '–'}</span>
+          <span style="color: var(--good);">enrolled into ${models.length} model${models.length === 1 ? '' : 's'} · ${escapeHtml(models.join(', '))}</span>
+          ${failNote}
         </div>`;
       nameEl.value = '';
     } else {
@@ -255,7 +261,7 @@ async function loadList() {
   const ul = document.getElementById('enrolled-list');
   ul.innerHTML = `<li class="li-empty">Loading registry…</li>`;
   try {
-    const r = await fetch('/enrolled?model=' + encodeURIComponent(currentModel()));
+    const r = await fetch('/enrolled');
     const items = await r.json();
     if (!Array.isArray(items) || items.length === 0) {
       ul.innerHTML = `<li class="li-empty">No identities enrolled yet.</li>`;
@@ -263,13 +269,18 @@ async function loadList() {
     }
     ul.innerHTML = '';
     items.forEach((it, i) => {
+      const models = Array.isArray(it.models) ? it.models : [];
+      const badges = models
+        .map((m) => `<span class="li-badge">${escapeHtml(m)}</span>`)
+        .join(' ');
       const li = document.createElement('li');
       li.innerHTML = `
         <span class="li-index">${String(i + 1).padStart(2, '0')}</span>
         <span class="li-name">${escapeHtml(it.name)}</span>
-        <button data-id="${it.id}" aria-label="Delete ${escapeHtml(it.name)}">Delete</button>`;
+        <span class="li-models">${badges}</span>
+        <button data-name="${escapeHtml(it.name)}" aria-label="Delete ${escapeHtml(it.name)}">Delete</button>`;
       li.querySelector('button').addEventListener('click', async () => {
-        await fetch(`/enrolled/${it.id}?model=` + encodeURIComponent(currentModel()), { method: 'DELETE' });
+        await fetch('/enrolled/by-name/' + encodeURIComponent(it.name), { method: 'DELETE' });
         loadList();
       });
       ul.appendChild(li);

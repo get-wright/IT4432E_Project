@@ -43,3 +43,27 @@ def test_verify_empty_returns_no_match(tmp_path: Path):
     result = db.verify(q, threshold=0.5)
     assert result["matched"] is False
     assert result["best_match"] is None
+
+
+def test_delete_by_name_removes_all_matching_rows(tmp_path: Path):
+    db = EnrollmentDB(tmp_path, dim=8)
+    eye = np.eye(8, dtype=np.float32)
+    db.enroll("alice", torch.tensor(eye[0]))
+    db.enroll("alice", torch.tensor(eye[1]))  # same name twice
+    db.enroll("bob", torch.tensor(eye[2]))
+
+    removed = db.delete_by_name("alice")
+    assert removed == 2
+    assert {e["name"] for e in db.list_enrolled()} == {"bob"}
+
+    # bob's vector survived compaction and still verifies.
+    res = db.verify(torch.tensor(eye[2]), threshold=0.9)
+    assert res["best_match"] == "bob"
+
+    # Persist + reload from disk.
+    db2 = EnrollmentDB(tmp_path, dim=8)
+    assert {e["name"] for e in db2.list_enrolled()} == {"bob"}
+
+    # Deleting an absent name is a no-op returning 0.
+    assert db.delete_by_name("nobody") == 0
+
