@@ -14,7 +14,7 @@ Pipeline: CASIA-WebFace → MTCNN alignment → ResNet50 + 512-d embedding head 
 | Pins (105 celebs, disjoint from CASIA + LFW) | accuracy at fixed LFW threshold | **77.7%** |
 | Pins | spread | 0.376 |
 
-Pins identities are disjoint from both the training data (CASIA) and the eval set (LFW), so this number is a real cross-dataset check — not a re-tuned threshold. Full numbers in `evaluation/results.json`.
+Pins identities are disjoint from both the training data (CASIA) and the eval set (LFW), so this number is a real cross-dataset check — not a re-tuned threshold. Full numbers in `evaluation/results/`.
 
 For a deeper walk-through of why the training is structured this way — including the bug it replaced — see [`docs/training-overview.md`](docs/training-overview.md).
 
@@ -39,9 +39,20 @@ uv pip install -e ".[dev]"
 uvicorn application.backend.main:app --reload
 ```
 
-Open `http://localhost:8000`, grant camera permission. The page has three tabs: Enroll (name + capture), Verify (capture → best match + cosine similarity), Enrolled (list / delete). Threshold defaults are per-model; override with `APP_THRESHOLD_<NAME>` (e.g. `APP_THRESHOLD_ARCFACE=0.6`).
+Open `http://localhost:8000`, grant camera permission. Three tabs:
 
-API: `POST /enroll`, `POST /verify`, `GET /enrolled`, `DELETE /enrolled/{id}`. Both `enroll` and `verify` accept `{image: <base64 jpeg>}`; `enroll` additionally takes `name`. The model is loaded once at startup and runs on CPU.
+- **Enroll** — type a name, capture once, and the person is enrolled into *every* available model at once (each model aligns and embeds the same frame into its own store).
+- **Verify** — capture → best match + cosine similarity, run against the model picked in the **Verify model** dropdown.
+- **Enrolled** — people grouped across models; each row is tagged with the models it lives in and deletes from all of them in one click.
+
+Threshold defaults are per-model; override with `APP_THRESHOLD_<NAME>` (e.g. `APP_THRESHOLD_ARCFACE=0.6`).
+
+API (CPU only, models loaded once at startup):
+
+- `POST /enroll` — `{name, image}` → `{name, enrolled: [...], failed: [...]}`. Fans out across all available models; `failed` lists any model whose aligner found no face. Errors with 422 only if *no* model could enroll.
+- `POST /verify` — `{image, model?, threshold?}` → best match + top candidates for that one model.
+- `GET /enrolled` — people grouped by name with the models they appear in. `GET /enrolled?model=<name>` returns that single store's raw entries.
+- `DELETE /enrolled/by-name/{name}` — removes a person from every model's store. `DELETE /enrolled/{id}?model=<name>` deletes one entry from one store.
 
 ## Tests
 
@@ -85,12 +96,15 @@ python -m evaluation.evaluate --model arcface --pairs <pairs.txt> --aligned-root
 Three trained models live side-by-side under `models/`: ArcFace (ResNet50, 160px,
 ImageNet norm), AdaFace (IResNet50, 112px, 0.5 norm), FaceNet (InceptionResnetV1,
 160px, 0.5 norm). They produce non-comparable embeddings, so each has its own
-enrollment store under `application/embeddings/<model>/`.
+enrollment store under `application/embeddings/<model>/`. Enrollment writes a
+person into every available store at once; verification runs against a single
+model picked at runtime, since scores from different models can't be compared.
 
 ### Run the app
 Drop checkpoints into `application/models/` named `arcface.pt`, `adaface.pt`,
-`facenet.pth` (gitignored). The app loads whatever is present; missing models show
-as unavailable in the dropdown.
+`facenet.pth` (gitignored). The app loads whatever is present; a model with no
+checkpoint is simply skipped (enroll won't write to it, and it shows as
+unavailable in the Verify-model dropdown).
 
 ```bash
 uvicorn application.backend.main:app --port 8000
