@@ -80,7 +80,6 @@ def _reset_for_tests() -> None:
 class EnrollReq(BaseModel):
     name: str
     image: str
-    model: str | None = None
 
 
 class VerifyReq(BaseModel):
@@ -128,10 +127,28 @@ def list_models() -> list[dict]:
 
 @app.post("/enroll")
 def enroll(req: EnrollReq) -> dict:
-    name, m = _resolve(req.model)
-    emb = _decode_align_embed(req.image, m)
-    eid = m["db"].enroll(req.name, emb)
-    return {"id": eid, "name": req.name, "model": name}
+    """Enroll one capture into every available model. Per-model failures are reported,
+    not fatal, as long as at least one model succeeds."""
+    if not _loaded:
+        raise HTTPException(503, "no models available — drop a checkpoint in application/models/")
+    try:
+        img_bytes = base64.b64decode(req.image)
+    except Exception:
+        raise HTTPException(400, "invalid base64 image")
+
+    enrolled: list[str] = []
+    failed: list[str] = []
+    for name, m in _loaded.items():
+        tensor = m["aligner"].align(img_bytes)
+        if tensor is None:
+            failed.append(name)
+            continue
+        m["db"].enroll(req.name, m["embedder"].embed(tensor))
+        enrolled.append(name)
+
+    if not enrolled:
+        raise HTTPException(422, "no face detected")
+    return {"name": req.name, "enrolled": enrolled, "failed": failed}
 
 
 @app.post("/verify")
@@ -146,10 +163,30 @@ def verify(req: VerifyReq) -> dict:
 
 @app.get("/enrolled")
 def list_enrolled(model: str | None = None) -> list[dict]:
-    name = model if model is not None else _default_model
-    if name not in _loaded:
-        return []
-    return _loaded[name]["db"].list_enrolled()
+    # Explicit model → that model's raw entries (back-compat, used by tests).
+    if model is not None:
+        if model not in _loaded:
+            return []
+        return _loaded[model]["db"].list_enrolled()
+    # No model → aggregate across all loaded stores, grouped by person.
+    grouped: dict[str, dict] = {}
+    for name, m in _loaded.items():
+        for e in m["db"].list_enrolled():
+            g = grouped.setdefault(
+                e["name"], {"name": e["name"], "models": [], "created_at": e["created_at"]}
+            )
+            g["models"].append(name)
+            g["created_at"] = min(g["created_at"], e["created_at"])
+    for g in grouped.values():
+        g["models"].sort()
+    return sorted(grouped.values(), key=lambda g: g["created_at"])
+
+
+@app.delete("/enrolled/by-name/{name}")
+def delete_enrolled_by_name(name: str) -> dict:
+    """Remove a person from every loaded model's store."""
+    removed = {n: m["db"].delete_by_name(name) for n, m in _loaded.items()}
+    return {"ok": True, "removed": removed}
 
 
 @app.delete("/enrolled/{eid}")

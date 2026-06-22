@@ -106,6 +106,15 @@ class EnrollmentDB:
             c.execute("DELETE FROM enrolled WHERE id=?", (eid,))
         self._compact()
 
+    def delete_by_name(self, name: str) -> int:
+        """Delete every entry with this name. Returns how many rows were removed."""
+        with sqlite3.connect(self.db_path) as c:
+            cur = c.execute("DELETE FROM enrolled WHERE name=?", (name,))
+            removed = cur.rowcount
+        if removed:
+            self._compact()
+        return removed
+
     def list_enrolled(self) -> list[dict]:
         with sqlite3.connect(self.db_path) as c:
             return [
