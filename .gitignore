@@ -50,3 +50,6 @@ evaluation/results/comparison.csv
 report/
 eval_local/
 gotchas.md
+
+# Internal docs (training notes, specs/plans)
+/docs/

@@ -2,8 +2,6 @@
 
 Pins identities are disjoint from both the training data (CASIA) and the eval set (LFW), so this number is a real cross-dataset check — not a re-tuned threshold. Full numbers in `evaluation/results/`.
 
-For a deeper walk-through of why the training is structured this way — including the bug it replaced — see [`docs/training-overview.md`](docs/training-overview.md).
-
 ## Layout
 
 - `shared/preprocess-data/` — raw Kaggle datasets (gitignored) and a sanity-check script
@@ -12,7 +10,6 @@ For a deeper walk-through of why the training is structured this way — includi
 - `models/arcface/`, `models/adaface/`, `models/facenet/` — per-model training code
 - `evaluation/` — multi-model LFW benchmark CLI, comparison aggregator
 - `application/` — FastAPI backend, vanilla-JS webcam frontend, integration tests
-- `docs/` — training overview and cross-dataset eval notes
 
 ## Running the app
 
